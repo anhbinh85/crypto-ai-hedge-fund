@@ -2,6 +2,10 @@ from langchain_core.messages import HumanMessage
 from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
 import json
+from src.data.binance_provider import BinanceDataProvider
+from src.tools.binance_executor import BinanceExecutor
+from src.config.binance_config import BinanceConfig
+import logging
 
 from src.tools.api import get_financial_metrics
 
@@ -157,3 +161,105 @@ def fundamentals_agent(state: AgentState):
         "messages": [message],
         "data": data,
     }
+
+class FundamentalsCryptoAgent:
+    def __init__(self, config: BinanceConfig, data_provider: BinanceDataProvider, executor: BinanceExecutor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+        self.logger = logging.getLogger(__name__)
+        self.positions = {}
+
+    def has_strong_fundamentals(self, symbol: str) -> bool:
+        # Placeholder: Replace with real on-chain/project fundamentals
+        fundamentals = self.data_provider.get_crypto_fundamentals(symbol) if hasattr(self.data_provider, 'get_crypto_fundamentals') else {}
+        liquidity_score = fundamentals.get('liquidity_score', 8)
+        decentralization_score = fundamentals.get('decentralization_score', 8)
+        tokenomics_score = fundamentals.get('tokenomics_score', 8)
+        return liquidity_score > 7 and decentralization_score > 7 and tokenomics_score > 7
+
+    def run_strategy(self, symbol: str):
+        price = self.data_provider.get_ticker_price(symbol)
+        if self.has_strong_fundamentals(symbol):
+            quantity = self.executor.calculate_position_size(symbol, price) if hasattr(self.executor, 'calculate_position_size') else 1
+            if quantity > 0:
+                self.executor.create_order(symbol, 'BUY', 'MARKET', quantity)
+        # Add sell/exit logic as needed
+
+    def run_all_symbols(self):
+        for symbol in self.config.trading_pairs:
+            self.run_strategy(symbol)
+
+class FundamentalsAgent:
+    def __init__(self, config, data_provider, executor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+
+    def consult_crypto(self, symbol, timeframe, model_used="fundamentals"):
+        df = self.data_provider.get_historical_klines(symbol, interval=timeframe, limit=90)
+        latest_close = df['close'].iloc[-1]
+        avg_close = df['close'].rolling(window=90).mean().iloc[-1]
+        # For demonstration, treat above-average price as strong fundamentals
+        if latest_close > avg_close:
+            signal = "BULLISH"
+            action = "LONG"
+            confidence = 80
+            reasoning = "Strong fundamentals detected (price above 90-period average)."
+            entry_condition = f"Buy if fundamentals are strong."
+            exit_condition = f"Sell if fundamentals weaken."
+        else:
+            signal = "NEUTRAL"
+            action = "HOLD"
+            confidence = 60
+            reasoning = "Fundamentals are not strong."
+            entry_condition = "Wait for strong fundamentals."
+            exit_condition = "N/A"
+
+        data_summary = (
+            f"{symbol} on {timeframe} timeframe. Latest price: {self.format_price(latest_close)}. "
+            f"90-period MA: {self.format_price(avg_close)}."
+        )
+
+        return {
+            "agent": "fundamentals",
+            "signal": signal,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "action": action,
+            "quantity": 1 if action == "LONG" else 0,
+            "quantity_explanation": "Fundamentals-based position size.",
+            "entry_condition": entry_condition,
+            "exit_condition": exit_condition,
+            "reversal_signal": "If fundamentals change, reconsider.",
+            "suggested_duration": "Hold while fundamentals are strong.",
+            "model_used": model_used,
+            "data_summary": data_summary,
+            "discord_message": (
+                f"**{symbol} ({timeframe})**\n"
+                f"**Technical Summary:**\n"
+                f"`Price: {self.format_price(latest_close)} | 90-MA: {self.format_price(avg_close)}`\n"
+                f"**Signal:** {signal}\n"
+                f"**Action:** {action} | **Quantity:** 1\n"
+                f"**Entry:** {entry_condition}\n"
+                f"**Exit:** {exit_condition}\n"
+                f"**Confidence:** {confidence}%\n"
+                f"**Reasoning:** {reasoning}\n"
+                f"**Model Used:** {model_used}\n"
+            )
+        }
+
+    def format_price(self, price):
+        if price == 0:
+            return "$0.00"
+        abs_price = abs(price)
+        if abs_price >= 1:
+            return f"${price:.2f}"
+        elif abs_price >= 0.01:
+            return f"${price:.4f}"
+        elif abs_price >= 0.0001:
+            return f"${price:.6f}"
+        elif abs_price >= 0.00000001:
+            return f"${price:.8f}"
+        else:
+            return f"${price:.2e}"

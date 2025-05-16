@@ -1,0 +1,5 @@
+2025-05-10 11:49:46,185 - __main__ - INFO - Trading bot started
+2025-05-10 11:49:46,185 - __main__ - INFO - Trading pairs: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ADAUSDT']
+2025-05-10 11:49:46,185 - __main__ - INFO - Base currency: USDT
+2025-05-10 11:49:46,185 - __main__ - INFO - Quote currency: USDT
+2025-05-10 12:06:53,502 - __main__ - INFO - Trading bot stopped by user

@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
+from src.data.binance_provider import BinanceDataProvider
+from src.tools.binance_executor import BinanceExecutor
+from src.config.binance_config import BinanceConfig
+import logging
 
 
 class PortfolioDecision(BaseModel):
@@ -191,3 +195,61 @@ def generate_trading_decision(
         return PortfolioManagerOutput(decisions={ticker: PortfolioDecision(action="hold", quantity=0, confidence=0.0, reasoning="Error in portfolio management, defaulting to hold") for ticker in tickers})
 
     return call_llm(prompt=prompt, model_name=model_name, model_provider=model_provider, pydantic_model=PortfolioManagerOutput, agent_name="portfolio_manager", default_factory=create_default_portfolio_output)
+
+
+class PortfolioManagerCryptoAgent:
+    def __init__(self, config: BinanceConfig, data_provider: BinanceDataProvider, executor: BinanceExecutor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+        self.logger = logging.getLogger(__name__)
+        self.positions = {}
+
+    def get_allocation(self, symbol: str) -> float:
+        # Placeholder: Replace with real allocation logic (e.g., based on volatility, market cap, etc.)
+        return 1.0 / max(1, len(self.config.trading_pairs))
+
+    def run_strategy(self, symbol: str):
+        price = self.data_provider.get_ticker_price(symbol)
+        allocation = self.get_allocation(symbol)
+        balances = self.data_provider.get_account_balance()
+        quote_balance = balances.get(self.config.quote_currency, 0.0)
+        position_size = (quote_balance * allocation) / price
+        if position_size > 0:
+            self.executor.create_order(symbol, 'BUY', 'MARKET', position_size)
+        # Add sell/exit logic as needed
+
+    def run_all_symbols(self):
+        for symbol in self.config.trading_pairs:
+            self.run_strategy(symbol)
+
+
+class PortfolioManagerAgent:
+    def __init__(self, config, data_provider, executor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+
+    def make_decision(self, risk_report: dict) -> dict:
+        if risk_report["veto"]:
+            action = "HOLD"
+            reason = "Risk Manager vetoed action due to high risk."
+        else:
+            # Example: majority vote
+            actions = [s["action"] for s in risk_report["signals"]]
+            action = max(set(actions), key=actions.count)
+            reason = "Majority agent action."
+        return {
+            "final_action": action,
+            "reason": reason,
+            "risk_score": risk_report["risk_score"],
+            "agent_signals": risk_report["signals"]
+        }
+
+    def format_price(self, price):
+        if price >= 1:
+            return f"${price:.2f}"
+        elif price >= 0.01:
+            return f"${price:.4f}"
+        else:
+            return f"${price:.6f}"

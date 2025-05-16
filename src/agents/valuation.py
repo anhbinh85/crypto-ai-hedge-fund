@@ -18,6 +18,11 @@ from src.tools.api import (
     search_line_items,
 )
 
+from src.data.binance_provider import BinanceDataProvider
+from src.tools.binance_executor import BinanceExecutor
+from src.config.binance_config import BinanceConfig
+import logging
+
 def valuation_agent(state: AgentState):
     """Run valuation across tickers and write signals back to `state`."""
 
@@ -133,8 +138,8 @@ def valuation_agent(state: AgentState):
                     "bearish" if vals["gap"] and vals["gap"] < -0.15 else "neutral"
                 ),
                 "details": (
-                    f"Value: ${vals['value']:,.2f}, Market Cap: ${market_cap:,.2f}, "
-                    f"Gap: {vals['gap']:.1%}, Weight: {vals['weight']*100:.0f}%"
+                    f"Value: {format_price(vals['value'])}, Market Cap: {format_price(market_cap)}, "
+                    f"Gap: {format_price(vals['gap'])}"
                 ),
             }
             for m, vals in method_values.items() if vals["value"] > 0
@@ -264,3 +269,77 @@ def calculate_residual_income_value(
 
     intrinsic = book_val + pv_ri + pv_term
     return intrinsic * 0.8  # 20% margin of safety
+
+def format_price(price):
+    if price == 0:
+        return "$0.00"
+    abs_price = abs(price)
+    if abs_price >= 1:
+        return f"${price:.2f}"
+    elif abs_price >= 0.01:
+        return f"${price:.4f}"
+    elif abs_price >= 0.0001:
+        return f"${price:.6f}"
+    elif abs_price >= 0.00000001:
+        return f"${price:.8f}"
+    else:
+        return f"${price:.2e}"
+
+class ValuationAgent:
+    def __init__(self, config, data_provider, executor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+
+    def consult_crypto(self, symbol, timeframe, model_used="valuation"):
+        df = self.data_provider.get_historical_klines(symbol, interval=timeframe, limit=90)
+        latest_close = df['close'].iloc[-1]
+        avg_close = df['close'].rolling(window=90).mean().iloc[-1]
+        # For demonstration, treat avg_close as "intrinsic value"
+        if latest_close < avg_close:
+            signal = "BULLISH"
+            action = "LONG"
+            confidence = 80
+            reasoning = "Asset is undervalued based on intrinsic value."
+            entry_condition = f"Buy if price is below intrinsic value ({format_price(avg_close)})"
+            exit_condition = f"Sell if price reaches intrinsic value ({format_price(avg_close)})"
+        else:
+            signal = "NEUTRAL"
+            action = "HOLD"
+            confidence = 60
+            reasoning = "Asset is fairly valued or overvalued."
+            entry_condition = "Wait for undervaluation."
+            exit_condition = "N/A"
+
+        data_summary = (
+            f"{symbol} on {timeframe} timeframe. Latest price: {format_price(latest_close)}. "
+            f"90-period MA (intrinsic value): {format_price(avg_close)}."
+        )
+
+        return {
+            "agent": "valuation",
+            "signal": signal,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "action": action,
+            "quantity": 1 if action == "LONG" else 0,
+            "quantity_explanation": "Valuation-based position size.",
+            "entry_condition": entry_condition,
+            "exit_condition": exit_condition,
+            "reversal_signal": "If valuation changes, reconsider.",
+            "suggested_duration": "Hold until value is realized.",
+            "model_used": model_used,
+            "data_summary": data_summary,
+            "discord_message": (
+                f"**{symbol} ({timeframe})**\n"
+                f"**Technical Summary:**\n"
+                f"`Price: {format_price(latest_close)} | Intrinsic Value: {format_price(avg_close)}`\n"
+                f"**Signal:** {signal}\n"
+                f"**Action:** {action} | **Quantity:** 1\n"
+                f"**Entry:** {entry_condition}\n"
+                f"**Exit:** {exit_condition}\n"
+                f"**Confidence:** {confidence}%\n"
+                f"**Reasoning:** {reasoning}\n"
+                f"**Model Used:** {model_used}\n"
+            )
+        }

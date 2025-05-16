@@ -15,6 +15,10 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 import statistics
+from src.data.binance_provider import BinanceDataProvider
+from src.tools.binance_executor import BinanceExecutor
+from src.config.binance_config import BinanceConfig
+import logging
 
 
 class StanleyDruckenmillerSignal(BaseModel):
@@ -593,3 +597,123 @@ def generate_druckenmiller_output(
         agent_name="stanley_druckenmiller_agent",
         default_factory=create_default_signal,
     )
+
+
+class StanleyDruckenmillerCryptoAgent:
+    def __init__(self, config, data_provider, executor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+
+    def _calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1] if not rsi.isnull().all() else 0
+
+    def _calculate_macd(self, series, fast=12, slow=26, signal=9):
+        exp1 = series.ewm(span=fast, adjust=False).mean()
+        exp2 = series.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        macd_signal = macd.ewm(span=signal, adjust=False).mean()
+        return macd.iloc[-1], macd_signal.iloc[-1]
+
+    def consult_crypto(self, symbol, timeframe, model_used="rule-based"):
+        df = self.data_provider.get_historical_klines(symbol, interval=timeframe, limit=90)
+        latest_close = df['close'].iloc[-1]
+        avg_close = df['close'].rolling(window=90).mean().iloc[-1]
+        rsi = self._calculate_rsi(df['close'])
+        macd, macd_signal = self._calculate_macd(df['close'])
+
+        if macd > macd_signal and rsi > 60:
+            signal = "BULLISH"
+            action = "LONG"
+            confidence = 85
+            reasoning = "Strong macro trend and momentum."
+            entry_condition = f"Open LONG if price breaks above ${latest_close * 1.02:.2f}"
+            exit_condition = f"Close LONG if price drops below ${avg_close:.2f}"
+        elif macd < macd_signal and rsi < 40:
+            signal = "BEARISH"
+            action = "SHORT"
+            confidence = 80
+            reasoning = "Momentum fading, trend reversal likely."
+            entry_condition = f"Open SHORT if price drops below ${latest_close * 0.98:.2f}"
+            exit_condition = f"Close SHORT if price rises above ${avg_close:.2f}"
+        else:
+            signal = "NEUTRAL"
+            action = "HOLD"
+            confidence = 60
+            reasoning = "No clear macro trend."
+            entry_condition = "Wait for strong trend."
+            exit_condition = "N/A"
+
+        data_summary = (
+            f"{symbol} on {timeframe} timeframe. Latest price: ${latest_close:.2f}. "
+            f"90-period MA: ${avg_close:.2f}. RSI(14): {rsi:.2f}. MACD: {macd:.2f}, Signal: {macd_signal:.2f}."
+        )
+
+        return {
+            "agent": "stanley_druckenmiller",
+            "signal": signal,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "action": action,
+            "quantity": 1 if action in ["LONG", "SHORT"] else 0,
+            "quantity_explanation": "Macro position size.",
+            "entry_condition": entry_condition,
+            "exit_condition": exit_condition,
+            "reversal_signal": "If price moves 5% against position, consider stop-loss.",
+            "suggested_duration": "Ride the trend.",
+            "model_used": model_used,
+            "data_summary": data_summary,
+            "discord_message": (
+                f"**{symbol} ({timeframe})**\n"
+                f"**Technical Summary:**\n"
+                f"`Price: {self.format_price(latest_close)} | 90-MA: {self.format_price(avg_close)} | RSI(14): {rsi:.2f} | MACD: {macd:.2f}`\n"
+                f"**Signal:** {signal}\n"
+                f"**Action:** {action} | **Quantity:** 1\n"
+                f"**Entry:** {entry_condition}\n"
+                f"**Exit:** {exit_condition}\n"
+                f"**Reversal:** If price moves 5% against position, consider stop-loss.\n"
+                f"**Confidence:** {confidence}%\n"
+                f"**Reasoning:** {reasoning}\n"
+                f"**Model Used:** {model_used}\n"
+            )
+        }
+
+    def has_macro_trend_and_conviction(self, symbol: str) -> bool:
+        # Placeholder: Replace with real macro trend and conviction logic
+        fundamentals = self.data_provider.get_crypto_fundamentals(symbol) if hasattr(self.data_provider, 'get_crypto_fundamentals') else {}
+        macro_trend_score = fundamentals.get('macro_trend_score', 8)  # Example: use a default value
+        conviction_score = fundamentals.get('conviction_score', 8)  # Example: use a default value
+        return macro_trend_score > 7 and conviction_score > 7
+
+    def run_strategy(self, symbol: str):
+        price = self.data_provider.get_ticker_price(symbol)
+        if self.has_macro_trend_and_conviction(symbol):
+            # Aggressive position sizing (e.g., up to max allowed)
+            quantity = self.executor.calculate_position_size(symbol, price) if hasattr(self.executor, 'calculate_position_size') else 2
+            if quantity > 0:
+                self.executor.create_order(symbol, 'BUY', 'MARKET', quantity)
+        # Add sell/exit logic as needed
+
+    def run_all_symbols(self):
+        for symbol in self.config.trading_pairs:
+            self.run_strategy(symbol)
+
+    def format_price(self, price):
+        if price == 0:
+            return "$0.00"
+        abs_price = abs(price)
+        if abs_price >= 1:
+            return f"${price:.2f}"
+        elif abs_price >= 0.01:
+            return f"${price:.4f}"
+        elif abs_price >= 0.0001:
+            return f"${price:.6f}"
+        elif abs_price >= 0.00000001:
+            return f"${price:.8f}"
+        else:
+            return f"${price:.2e}"

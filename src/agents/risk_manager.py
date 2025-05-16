@@ -3,6 +3,10 @@ from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
 from src.tools.api import get_prices, prices_to_df
 import json
+from src.data.binance_provider import BinanceDataProvider
+from src.tools.binance_executor import BinanceExecutor
+from src.config.binance_config import BinanceConfig
+import logging
 
 
 ##### Risk Management Agent #####
@@ -81,3 +85,57 @@ def risk_management_agent(state: AgentState):
         "messages": state["messages"] + [message],
         "data": data,
     }
+
+class RiskManagerCryptoAgent:
+    def __init__(self, config: BinanceConfig, data_provider: BinanceDataProvider, executor: BinanceExecutor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+        self.logger = logging.getLogger(__name__)
+        self.positions = {}
+
+    def is_risk_acceptable(self, symbol: str, price: float) -> bool:
+        # Placeholder: Replace with real risk logic (e.g., volatility, drawdown, etc.)
+        fundamentals = self.data_provider.get_crypto_fundamentals(symbol) if hasattr(self.data_provider, 'get_crypto_fundamentals') else {}
+        volatility_score = fundamentals.get('volatility_score', 5)  # Lower is better
+        max_acceptable_volatility = 7
+        return volatility_score <= max_acceptable_volatility
+
+    def run_strategy(self, symbol: str):
+        price = self.data_provider.get_ticker_price(symbol)
+        if self.is_risk_acceptable(symbol, price):
+            # Example: Use config's max_position_size for risk control
+            balances = self.data_provider.get_account_balance()
+            quote_balance = balances.get(self.config.quote_currency, 0.0)
+            position_size = quote_balance * self.config.max_position_size / price
+            if position_size > 0:
+                self.executor.create_order(symbol, 'BUY', 'MARKET', position_size)
+        # Add stop loss/exit logic as needed
+
+    def run_all_symbols(self):
+        for symbol in self.config.trading_pairs:
+            self.run_strategy(symbol)
+
+class RiskManagerAgent:
+    def __init__(self, config, data_provider, executor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+
+    def evaluate(self, signals: list) -> dict:
+        # Example: aggregate risk, veto if too many bearish, adjust position size, etc.
+        risk_score = sum(1 if s["signal"] in ["SELL", "SHORT"] else -1 for s in signals)
+        veto = risk_score > len(signals) // 2  # Veto if majority bearish
+        return {
+            "risk_score": risk_score,
+            "veto": veto,
+            "signals": signals
+        }
+
+def format_price(price):
+    if price >= 1:
+        return f"${price:.2f}"
+    elif price >= 0.01:
+        return f"${price:.4f}"
+    else:
+        return f"${price:.6f}"

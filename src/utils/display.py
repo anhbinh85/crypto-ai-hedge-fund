@@ -31,6 +31,20 @@ def print_trading_output(result: dict) -> None:
         print(f"\n{Fore.WHITE}{Style.BRIGHT}Analysis for {Fore.CYAN}{ticker}{Style.RESET_ALL}")
         print(f"{Fore.WHITE}{Style.BRIGHT}{'=' * 50}{Style.RESET_ALL}")
 
+        # RISK ASSESSMENT (show before agent analysis)
+        risk_score = result.get('risk_score', None)
+        if isinstance(risk_score, dict):
+            ticker_risk_score = risk_score.get(ticker, None)
+        else:
+            ticker_risk_score = risk_score
+        if ticker_risk_score is not None:
+            if ticker_risk_score < 0:
+                print(f"{Fore.RED}{Style.BRIGHT}RISK ASSESSMENT: Cautious, not a good time to trade!{Style.RESET_ALL}")
+            elif ticker_risk_score == 0:
+                print(f"{Fore.YELLOW}{Style.BRIGHT}RISK ASSESSMENT: Neutral risk environment.{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.GREEN}{Style.BRIGHT}RISK ASSESSMENT: Trading opportunity with calculated risk.{Style.RESET_ALL}")
+
         # Prepare analyst signals table for this ticker
         table_data = []
         for agent, signals in result.get("analyst_signals", {}).items():

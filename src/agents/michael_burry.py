@@ -18,10 +18,15 @@ from src.tools.api import (
 )
 from src.utils.llm import call_llm
 from src.utils.progress import progress
+from src.data.binance_provider import BinanceDataProvider
+from src.tools.binance_executor import BinanceExecutor
+from src.config.binance_config import BinanceConfig
+import logging
 
 __all__ = [
     "MichaelBurrySignal",
     "michael_burry_agent",
+    "MichaelBurryCryptoAgent",
 ]
 
 ###############################################################################
@@ -386,3 +391,126 @@ def _generate_burry_output(
         agent_name="michael_burry_agent",
         default_factory=create_default_michael_burry_signal,
     )
+
+
+class MichaelBurryCryptoAgent:
+    def __init__(self, config: BinanceConfig, data_provider: BinanceDataProvider, executor: BinanceExecutor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+        self.logger = logging.getLogger(__name__)
+        self.positions = {}
+
+    def _calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1] if not rsi.isnull().all() else 0
+
+    def _calculate_macd(self, series, fast=12, slow=26, signal=9):
+        exp1 = series.ewm(span=fast, adjust=False).mean()
+        exp2 = series.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        macd_signal = macd.ewm(span=signal, adjust=False).mean()
+        return macd.iloc[-1], macd_signal.iloc[-1]
+
+    def consult_crypto(self, symbol, timeframe, model_used="rule-based"):
+        df = self.data_provider.get_historical_klines(symbol, interval=timeframe, limit=90)
+        latest_close = df['close'].iloc[-1]
+        avg_close = df['close'].rolling(window=90).mean().iloc[-1]
+        rsi = self._calculate_rsi(df['close'])
+        macd, macd_signal = self._calculate_macd(df['close'])
+
+        if latest_close > avg_close * 1.10 and rsi > 70:
+            signal = "BEARISH"
+            action = "SHORT"
+            confidence = 90
+            reasoning = "Market is euphoric and overvalued. Burry would short the bubble."
+            entry_condition = f"Open SHORT if price drops below {self.format_price(latest_close * 0.98)}"
+            exit_condition = f"Cover SHORT if price rises above {self.format_price(avg_close)}"
+        elif latest_close < avg_close * 0.90 and rsi < 30:
+            signal = "BULLISH"
+            action = "LONG"
+            confidence = 85
+            reasoning = "Deep value opportunity, market is oversold."
+            entry_condition = f"Open LONG if price rises above {self.format_price(latest_close * 1.02)}"
+            exit_condition = f"Close LONG if price drops below {self.format_price(avg_close)}"
+        else:
+            signal = "NEUTRAL"
+            action = "HOLD"
+            confidence = 60
+            reasoning = "No deep value or bubble detected."
+            entry_condition = "Wait for extreme conditions."
+            exit_condition = "N/A"
+
+        data_summary = (
+            f"{symbol} on {timeframe} timeframe. Latest price: {self.format_price(latest_close)}. "
+            f"90-period MA: {self.format_price(avg_close)}. RSI(14): {rsi:.2f}. MACD: {self.format_price(macd)}, Signal: {self.format_price(macd_signal)}."
+        )
+
+        return {
+            "agent": "michael_burry",
+            "signal": signal,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "action": action,
+            "quantity": 1 if action in ["LONG", "SHORT"] else 0,
+            "quantity_explanation": "Contrarian position size.",
+            "entry_condition": entry_condition,
+            "exit_condition": exit_condition,
+            "reversal_signal": "If price moves 5% against position, consider stop-loss.",
+            "stop_loss_pct": 0.05,  # 5% stop-loss
+            "take_profit_pct": 0.10,  # 10% take-profit
+            "suggested_duration": "Hold until value is restored.",
+            "model_used": model_used,
+            "data_summary": data_summary,
+            "discord_message": (
+                f"**{symbol} ({timeframe})**\n"
+                f"**Technical Summary:**\n"
+                f"`Price: {self.format_price(latest_close)} | 90-MA: {self.format_price(avg_close)} | RSI(14): {rsi:.2f} | MACD: {self.format_price(macd)}`\n"
+                f"**Signal:** {signal}\n"
+                f"**Action:** {action} | **Quantity:** 1\n"
+                f"**Entry:** {entry_condition}\n"
+                f"**Exit:** {exit_condition}\n"
+                f"**Reversal:** If price moves 5% against position, consider stop-loss.\n"
+                f"**Confidence:** {confidence}%\n"
+                f"**Reasoning:** {reasoning}\n"
+                f"**Model Used:** {model_used}\n"
+            )
+        }
+
+    def is_contrarian_and_undervalued(self, symbol: str) -> bool:
+        # Placeholder: Replace with real contrarian and value logic
+        fundamentals = self.data_provider.get_crypto_fundamentals(symbol) if hasattr(self.data_provider, 'get_crypto_fundamentals') else {}
+        sentiment_score = fundamentals.get('sentiment_score', 3)  # Example: low sentiment (contrarian)
+        value_score = fundamentals.get('value_score', 8)  # Example: high value
+        return sentiment_score < 4 and value_score > 7
+
+    def run_strategy(self, symbol: str):
+        price = self.data_provider.get_ticker_price(symbol)
+        if self.is_contrarian_and_undervalued(symbol):
+            quantity = self.executor.calculate_position_size(symbol, price) if hasattr(self.executor, 'calculate_position_size') else 1
+            if quantity > 0:
+                self.executor.create_order(symbol, 'BUY', 'MARKET', quantity)
+        # Add sell/exit logic as needed
+
+    def run_all_symbols(self):
+        for symbol in self.config.trading_pairs:
+            self.run_strategy(symbol)
+
+    def format_price(self, price):
+        if price == 0:
+            return "$0.00"
+        abs_price = abs(price)
+        if abs_price >= 1:
+            return f"${price:.2f}"
+        elif abs_price >= 0.01:
+            return f"${price:.4f}"
+        elif abs_price >= 0.0001:
+            return f"${price:.6f}"
+        elif abs_price >= 0.00000001:
+            return f"${price:.8f}"
+        else:
+            return f"${price:.2e}"

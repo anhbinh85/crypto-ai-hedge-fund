@@ -11,6 +11,11 @@ import numpy as np
 from src.tools.api import get_prices, prices_to_df
 from src.utils.progress import progress
 
+from src.data.binance_provider import BinanceDataProvider
+from src.tools.binance_executor import BinanceExecutor
+from src.config.binance_config import BinanceConfig
+import logging
+
 
 ##### Technical Analyst #####
 def technical_analyst_agent(state: AgentState):
@@ -507,3 +512,102 @@ def calculate_hurst_exponent(price_series: pd.Series, max_lag: int = 20) -> floa
     except (ValueError, RuntimeWarning):
         # Return 0.5 (random walk) if calculation fails
         return 0.5
+
+
+class TechnicalsAgent:
+    def __init__(self, config, data_provider, executor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+
+    def _calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1] if not rsi.isnull().all() else 0
+
+    def _calculate_macd(self, series, fast=12, slow=26, signal=9):
+        exp1 = series.ewm(span=fast, adjust=False).mean()
+        exp2 = series.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        macd_signal = macd.ewm(span=signal, adjust=False).mean()
+        return macd.iloc[-1], macd_signal.iloc[-1]
+
+    def consult_crypto(self, symbol, timeframe, model_used="technicals"):
+        df = self.data_provider.get_historical_klines(symbol, interval=timeframe, limit=50)
+        latest_close = df['close'].iloc[-1]
+        avg_close = df['close'].rolling(window=50).mean().iloc[-1]
+        rsi = self._calculate_rsi(df['close'])
+        macd, macd_signal = self._calculate_macd(df['close'])
+
+        if macd > macd_signal and rsi > 60:
+            signal = "BULLISH"
+            action = "LONG"
+            confidence = 80
+            reasoning = "Technical indicators are bullish."
+            entry_condition = f"Buy on bullish technical signal."
+            exit_condition = f"Sell on bearish technical signal."
+        elif macd < macd_signal and rsi < 40:
+            signal = "BEARISH"
+            action = "SHORT"
+            confidence = 80
+            reasoning = "Technical indicators are bearish."
+            entry_condition = f"Short on bearish technical signal."
+            exit_condition = f"Cover on bullish technical signal."
+        else:
+            signal = "NEUTRAL"
+            action = "HOLD"
+            confidence = 60
+            reasoning = "Technical indicators are neutral."
+            entry_condition = "Wait for clear technical signal."
+            exit_condition = "N/A"
+
+        data_summary = (
+            f"{symbol} on {timeframe} timeframe. Latest price: {self.format_price(latest_close)}. "
+            f"50-period MA: {self.format_price(avg_close)}. RSI(14): {rsi:.2f}. MACD: {self.format_price(macd)}, Signal: {self.format_price(macd_signal)}."
+        )
+
+        return {
+            "agent": "technicals",
+            "signal": signal,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "action": action,
+            "quantity": 1 if action in ["LONG", "SHORT"] else 0,
+            "quantity_explanation": "Technicals-based position size.",
+            "entry_condition": entry_condition,
+            "exit_condition": exit_condition,
+            "reversal_signal": "If technicals change, reconsider.",
+            "suggested_duration": "Hold while technicals are bullish.",
+            "model_used": model_used,
+            "data_summary": data_summary,
+            "discord_message": (
+                f"**{symbol} ({timeframe})**\n"
+                f"**Technical Summary:**\n"
+                f"`Price: {self.format_price(latest_close)} | 50-MA: {self.format_price(avg_close)} | RSI(14): {rsi:.2f} | MACD: {self.format_price(macd)}`\n"
+                f"**Signal:** {signal}\n"
+                f"**Action:** {action} | **Quantity:** 1\n"
+                f"**Entry:** {entry_condition}\n"
+                f"**Exit:** {exit_condition}\n"
+                f"**Confidence:** {confidence}%\n"
+                f"**Reasoning:** {reasoning}\n"
+                f"**Model Used:** {model_used}\n"
+            )
+        }
+
+    def format_price(self, price):
+        if price == 0:
+            return "$0.00"
+        abs_price = abs(price)
+        if abs_price >= 1:
+            return f"${price:.2f}"
+        elif abs_price >= 0.01:
+            return f"${price:.4f}"
+        elif abs_price >= 0.0001:
+            return f"${price:.6f}"
+        elif abs_price >= 0.00000001:
+            return f"${price:.8f}"
+        else:
+            return f"${price:.2e}"

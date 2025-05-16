@@ -8,6 +8,13 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 import math
+from src.data.binance_provider import BinanceDataProvider
+from src.tools.binance_executor import BinanceExecutor
+from src.config.binance_config import BinanceConfig
+import logging
+from fastapi import HTTPException
+import pandas as pd
+import numpy as np
 
 
 class BenGrahamSignal(BaseModel):
@@ -343,3 +350,107 @@ def generate_graham_output(
         agent_name="ben_graham_agent",
         default_factory=create_default_ben_graham_signal,
     )
+
+
+class BenGrahamCryptoAgent:
+    def __init__(self, config: BinanceConfig, data_provider: BinanceDataProvider, executor: BinanceExecutor):
+        self.config = config
+        self.data_provider = data_provider
+        self.executor = executor
+        self.logger = logging.getLogger(__name__)
+        self.positions = {}
+
+    def _calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1] if not rsi.isnull().all() else 0
+
+    def _calculate_macd(self, series, fast=12, slow=26, signal=9):
+        exp1 = series.ewm(span=fast, adjust=False).mean()
+        exp2 = series.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        macd_signal = macd.ewm(span=signal, adjust=False).mean()
+        return macd.iloc[-1], macd_signal.iloc[-1]
+
+    def consult_crypto(self, symbol: str, timeframe: str = "1d", model_used: str = "rule-based") -> dict:
+        df = self.data_provider.get_historical_klines(symbol, interval=timeframe, limit=90)
+        latest_close = df['close'].iloc[-1]
+        avg_close = df['close'].rolling(window=90).mean().iloc[-1]
+        rsi = self._calculate_rsi(df['close'])
+        macd, macd_signal = self._calculate_macd(df['close'])
+
+        def format_price(price):
+            if price == 0:
+                return "$0.00"
+            abs_price = abs(price)
+            if abs_price >= 1:
+                return f"${price:.2f}"
+            elif abs_price >= 0.01:
+                return f"${price:.4f}"
+            elif abs_price >= 0.0001:
+                return f"${price:.6f}"
+            elif abs_price >= 0.00000001:
+                return f"${price:.8f}"
+            else:
+                return f"${price:.2e}"
+
+        if latest_close < avg_close * 0.95:
+            signal = "BULLISH"
+            action = "LONG"
+            confidence = 85
+            reasoning = "Price is below its 90-period average, suggesting undervaluation. Ben Graham would see this as a value opportunity."
+            entry_condition = f"Open LONG if price increases 10% to {format_price(latest_close * 1.1)}"
+            exit_condition = f"Close LONG if price drops 10% to {format_price(latest_close * 0.9)}"
+        elif latest_close > avg_close * 1.05:
+            signal = "BEARISH"
+            action = "SHORT"
+            confidence = 85
+            reasoning = "Price is above its 90-period average, suggesting overvaluation. Ben Graham would advise caution."
+            entry_condition = f"Open SHORT if price drops 10% to {format_price(latest_close * 0.9)}"
+            exit_condition = f"Close SHORT if price rises 10% to {format_price(latest_close * 1.1)}"
+        else:
+            signal = "NEUTRAL"
+            action = "HOLD"
+            confidence = 60
+            reasoning = "Price is near its 90-period average. Ben Graham would recommend patience."
+            entry_condition = "Wait for price to move 5% above or below average."
+            exit_condition = "N/A"
+
+        data_summary = (
+            f"{symbol} on {timeframe} timeframe. Latest price: {format_price(latest_close)}. "
+            f"90-period MA: {format_price(avg_close)}. RSI(14): {rsi:.2f}. MACD: {macd:.2f}, Signal: {macd_signal:.2f}."
+        )
+
+        return {
+            "agent": "ben_graham",
+            "signal": signal,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "action": action,
+            "quantity": 1 if action in ["LONG", "SHORT"] else 0,
+            "quantity_explanation": "Recommended position size in coins/contracts. Adjust based on your risk management.",
+            "entry_condition": entry_condition,
+            "exit_condition": exit_condition,
+            "reversal_signal": "If price moves 5% against position, consider stop-loss.",
+            "suggested_duration": "Until price returns to or above/below the 90-period average.",
+            "model_used": model_used,
+            "data_summary": data_summary,
+            "discord_message": (
+                f"✅ **Ben Graham | {symbol} ({timeframe})**\n\n"
+                f"**Signal:** `{signal}` | **Confidence:** `{confidence}%`\n"
+                f"**Action:** `{action}` | **Quantity:** `1`\n\n"
+                f"**Entry Condition**\n{entry_condition}\n\n"
+                f"**Exit Condition**\n{exit_condition}\n\n"
+                f"**Reversal Signal**\nIf price moves 5% against position, consider stop-loss.\n\n"
+                f"**Suggested Duration**\nUntil price returns to or above/below the 90-period average.\n\n"
+                f"**Technical Summary**\n"
+                f"```\n"
+                f"{symbol} on {timeframe} timeframe. Latest price: {format_price(latest_close)}. 90-period MA: {format_price(avg_close)}. RSI(14): {rsi:.2f}. MACD: {macd:.2f}, Signal: {macd_signal:.2f}.\n"
+                f"```\n"
+                f"**Reasoning**\n{reasoning}\n\n"
+                f"**Model Used**\n{model_used}\n"
+            )
+        }
