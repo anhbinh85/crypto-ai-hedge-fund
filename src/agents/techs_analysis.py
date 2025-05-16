@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 import re
 from src.data.binance_provider import BinanceDataProvider
 import logging
+from src.data.cache import get_cache
+import time
 
 # Indicator periods (defaults, can be parameterized)
 SMA_PERIOD = 20
@@ -27,7 +29,7 @@ STOCH_OVERBOUGHT = 80
 STOCH_OVERSOLD = 20
 
 LONGEST_PERIOD = max(SMA_PERIOD, RSI_PERIOD, VOLUME_MA_PERIOD, MACD_SLOW, ATR_PERIOD, STOCH_K, OBV_SMA_PERIOD)
-KLINE_LIMIT = LONGEST_PERIOD + 55
+KLINE_LIMIT = 200
 
 # --- Formatting helpers ---
 def format_number(value, decimals=2):
@@ -84,28 +86,28 @@ def format_volume(volume_val):
 
 def get_techs_embed(ticker, candle, binance_provider: BinanceDataProvider):
     logging.info(f"get_techs_embed called with ticker={ticker}, candle={candle}")
-    try:
-        # Use get_symbol_ticker for current price
-        ticker_data = binance_provider.client.get_symbol_ticker(symbol=ticker)
-        current_price_str = ticker_data.get('price')
-        # Try to get 24h change from get_ticker if available, else set to N/A
+    cache = get_cache()
+    cache_key = f"{ticker}_{candle}"
+    now = time.time()
+    # Try to get cached klines (with timestamp)
+    kline_cache = cache.get_prices(cache_key)
+    if kline_cache and isinstance(kline_cache, dict):
+        kline_data = kline_cache.get('data')
+        ts = kline_cache.get('ts', 0)
+        if kline_data and (now - ts) < 60:
+            use_cache = True
+        else:
+            use_cache = False
+    else:
+        use_cache = False
+    if not use_cache:
         try:
-            ticker_24h = binance_provider.client.get_ticker(symbol=ticker)
-            price_change_percent_str = ticker_24h.get('priceChangePercent')
-        except Exception:
-            price_change_percent_str = None
-    except Exception as e:
-        logging.exception(f"Failed to fetch ticker data for {ticker}: {e}")
-        return {"error": f"Failed to fetch ticker data for {ticker}"}
-    try:
-        # Use get_historical_klines for kline data
-        kline_data = binance_provider.client.get_historical_klines(symbol=ticker, interval=candle, limit=KLINE_LIMIT)
-        # If the result is a DataFrame, convert to list of lists for compatibility
-        if isinstance(kline_data, pd.DataFrame):
-            kline_data = kline_data.reset_index().values.tolist()
-    except Exception as e:
-        logging.exception(f"Failed to fetch kline data for {ticker} {candle}: {e}")
-        return {"error": f"Failed to fetch kline data for {ticker} {candle}"}
+            kline_data = binance_provider.client.get_historical_klines(symbol=ticker, interval=candle, limit=KLINE_LIMIT)
+            # Save to cache with timestamp
+            cache.set_prices(cache_key, {'data': kline_data, 'ts': now})
+        except Exception as e:
+            logging.exception(f"Failed to fetch kline data for {ticker} {candle}: {e}")
+            return {"error": f"Failed to fetch kline data for {ticker} {candle}"}
     try:
         depth_data = binance_provider.client.get_order_book(symbol=ticker, limit=ORDER_BOOK_DEPTH)
     except Exception as e:
@@ -143,6 +145,35 @@ def get_techs_embed(ticker, candle, binance_provider: BinanceDataProvider):
     df.ta.sma(close='OBV', length=OBV_SMA_PERIOD, append=True, col_names=(f'OBV_SMA_{OBV_SMA_PERIOD}',))
     df.ta.atr(length=ATR_PERIOD, append=True)
     df.ta.cdl_pattern(name="all", append=True)
+    # --- Additional Indicators ---
+    # 1. Bollinger Bands
+    bb = df.ta.bbands(append=True)
+    # 2. Ichimoku Cloud
+    ichimoku = df.ta.ichimoku(append=True)
+    # 3. ADX
+    adx = df.ta.adx(append=True)
+    # 4. Keltner Channels
+    kc = df.ta.kc(append=True)
+    # 5. Stochastic RSI
+    stochrsi = df.ta.stochrsi(append=True)
+    # 6. Donchian Channels
+    donchian = df.ta.donchian(append=True)
+    # 7. Supertrend
+    supertrend = df.ta.supertrend(append=True)
+    # 8. VWAP
+    vwap = df.ta.vwap(append=True)
+    # 9. Chaikin Money Flow
+    cmf = df.ta.cmf(append=True)
+    # 10. Fisher Transform
+    fisher = df.ta.fisher(append=True)
+    # 11. Connors RSI
+    # crsi = df.ta.crsi(append=True)  # Not available in pandas_ta, so skip
+    # 12. Hull Moving Average
+    hma = df.ta.hma(append=True)
+    # 13. Ease of Movement
+    eom = df.ta.eom(append=True)
+    # 14. Klinger Oscillator
+    kvo = df.ta.kvo(append=True)
 
     latest_data = df.iloc[-1]
     latest_sma = latest_data.get(f'SMA_{SMA_PERIOD}', float('nan'))
@@ -169,6 +200,46 @@ def get_techs_embed(ticker, candle, binance_provider: BinanceDataProvider):
     latest_stoch_d = latest_data.get(stoch_d_col_name, float('nan'))
     latest_obv = latest_data.get('OBV', float('nan'))
     latest_obv_sma = latest_data.get(f'OBV_SMA_{OBV_SMA_PERIOD}', float('nan'))
+
+    # --- Additional Indicator Values ---
+    # Bollinger Bands
+    bb_upper = latest_data.get('BBU_20_2.0', float('nan'))
+    bb_middle = latest_data.get('BBM_20_2.0', float('nan'))
+    bb_lower = latest_data.get('BBL_20_2.0', float('nan'))
+    # Ichimoku Cloud (Span A/B, Conversion/Base)
+    ichimoku_a = latest_data.get('ISA_9', float('nan'))
+    ichimoku_b = latest_data.get('ISB_26', float('nan'))
+    ichimoku_conv = latest_data.get('ITS_9', float('nan'))
+    ichimoku_base = latest_data.get('IKS_26', float('nan'))
+    # ADX
+    adx_val = latest_data.get('ADX_14', float('nan'))
+    # Keltner Channels
+    kc_upper = latest_data.get('KCU_20_2.0_10', float('nan'))
+    kc_middle = latest_data.get('KCM_20_2.0_10', float('nan'))
+    kc_lower = latest_data.get('KCL_20_2.0_10', float('nan'))
+    # Stochastic RSI
+    stochrsi_k = latest_data.get('STOCHRSIk_14_14_3_3', float('nan'))
+    stochrsi_d = latest_data.get('STOCHRSId_14_14_3_3', float('nan'))
+    # Donchian Channels
+    donchian_upper = latest_data.get('DCHigh_20', float('nan'))
+    donchian_lower = latest_data.get('DCLow_20', float('nan'))
+    # Supertrend
+    supertrend_val = latest_data.get('SUPERT_10_3.0', float('nan'))
+    supertrend_dir = latest_data.get('SUPERTd_10_3.0', float('nan'))
+    # VWAP
+    vwap_val = latest_data.get('VWAP_D', float('nan'))
+    # Chaikin Money Flow
+    cmf_val = latest_data.get('CMF_20', float('nan'))
+    # Fisher Transform
+    fisher_val = latest_data.get('FISHERT_9', float('nan'))
+    # Connors RSI
+    # crsi_val = latest_data.get('CRSI_3_2_100', float('nan'))  # Not available
+    # Hull Moving Average
+    hma_val = latest_data.get('HMA_20', float('nan'))
+    # Ease of Movement
+    eom_val = latest_data.get('EOM_14_100000000', float('nan'))
+    # Klinger Oscillator
+    kvo_val = latest_data.get('KVO_34_55_13', float('nan'))
 
     # Candlestick patterns
     candlestick_patterns = []
@@ -341,6 +412,19 @@ def get_techs_embed(ticker, candle, binance_provider: BinanceDataProvider):
     formatted_price = format_price(latest_close_price)
     formatted_sma = format_price(latest_sma)
     formatted_rsi_val = format_number(latest_rsi, 2)
+    try:
+        # Use get_symbol_ticker for current price
+        ticker_data = binance_provider.client.get_symbol_ticker(symbol=ticker)
+        current_price_str = ticker_data.get('price')
+        # Always fetch 24h price change percent
+        try:
+            ticker_24h = binance_provider.client.get_ticker(symbol=ticker)
+            price_change_percent_str = ticker_24h.get('priceChangePercent')
+        except Exception:
+            price_change_percent_str = None
+    except Exception as e:
+        logging.exception(f"Failed to fetch ticker data for {ticker}: {e}")
+        return {"error": f"Failed to fetch ticker data for {ticker}"}
     formatted_change = f"{Decimal(str(price_change_percent_str)):+.2f}%" if price_change_percent_str is not None else "N/A"
     formatted_volume = format_volume(latest_volume)
     formatted_volume_sma = format_volume(latest_volume_sma)
@@ -364,34 +448,121 @@ def get_techs_embed(ticker, candle, binance_provider: BinanceDataProvider):
         candlestick_text = candlestick_text[:1000] + "..."
     now_utc = datetime.now(timezone.utc)
     formatted_timestamp = now_utc.strftime('%Y-%m-%dT%H:%M:%S.') + f"{now_utc.microsecond // 1000:03d}Z"
+
+    # --- Grouped Indicator Strings (hide N/A) ---
+    def hide_na(label, value, emoji=None):
+        if value is None or (isinstance(value, str) and (value == "N/A" or value == "nan")):
+            return None
+        if isinstance(value, float) and (math.isnan(value) or value == float('nan')):
+            return None
+        if emoji:
+            return f"{emoji} {label}: {value}"
+        return f"{label}: {value}"
+
+    # Volatility
+    volatility_lines = []
+    bb_val = f"{format_price(bb_upper)} / {format_price(bb_middle)} / {format_price(bb_lower)}"
+    if not ("N/A" in bb_val):
+        volatility_lines.append(f"📉 BB: {bb_val}")
+    kc_val = f"{format_price(kc_upper)} / {format_price(kc_middle)} / {format_price(kc_lower)}"
+    if not ("N/A" in kc_val):
+        volatility_lines.append(f"📏 KC: {kc_val}")
+    donchian_val = f"{format_price(donchian_upper)} / {format_price(donchian_lower)}"
+    if not ("N/A" in donchian_val):
+        volatility_lines.append(f"📊 Donchian: {donchian_val}")
+    if not math.isnan(latest_atr):
+        volatility_lines.append(f"📈 ATR: {formatted_atr} ({atr_percentage})")
+    if not (supertrend_val == "N/A" or str(supertrend_dir) == "nan"):
+        volatility_lines.append(f"🔥 Supertrend: {format_price(supertrend_val)} (Dir: {supertrend_dir})")
+    volatility_text = "\n".join(volatility_lines) if volatility_lines else "-"
+
+    # Trend
+    trend_lines = []
+    if not math.isnan(latest_sma):
+        trend_lines.append(f"🟢 SMA({SMA_PERIOD}): {formatted_sma}")
+    ichimoku_val = f"{format_price(ichimoku_conv)} / {format_price(ichimoku_base)} / {format_price(ichimoku_a)} / {format_price(ichimoku_b)}"
+    if not ("N/A" in ichimoku_val):
+        trend_lines.append(f"🌥️ Ichimoku: {ichimoku_val}")
+    if not math.isnan(hma_val):
+        trend_lines.append(f"💹 Hull MA: {format_price(hma_val)}")
+    if not math.isnan(adx_val):
+        trend_lines.append(f"📏 ADX(14): {format_number(adx_val, 2)}")
+    trend_text = "\n".join(trend_lines) if trend_lines else "-"
+
+    # Momentum
+    momentum_lines = []
+    if not math.isnan(latest_rsi):
+        momentum_lines.append(f"🟦 RSI({RSI_PERIOD}): {formatted_rsi_val}{rsi_text}")
+    if not math.isnan(latest_stoch_k):
+        momentum_lines.append(f"🟪 Stoch({STOCH_K},{STOCH_D}) %K: {formatted_stoch_k}{stoch_text}")
+    if not math.isnan(latest_stoch_d):
+        momentum_lines.append(f"Stoch %D: {formatted_stoch_d}")
+    stochrsi_val = f"{format_number(stochrsi_k, 2)} / {format_number(stochrsi_d, 2)}"
+    if not ("N/A" in stochrsi_val):
+        momentum_lines.append(f"🟫 Stoch RSI (K/D): {stochrsi_val}")
+    macd_val = f"{formatted_macd_line} / {formatted_macd_signal} / {formatted_macd_hist}"
+    if not ("N/A" in macd_val):
+        momentum_lines.append(f"🟧 MACD: {macd_val}")
+    if not math.isnan(fisher_val):
+        momentum_lines.append(f"🟨 Fisher Transform: {format_number(fisher_val, 4)}")
+    momentum_text = "\n".join(momentum_lines) if momentum_lines else "-"
+
+    # Volume & Flow
+    volume_lines = []
+    if not math.isnan(latest_volume):
+        volume_lines.append(f"🔵 Volume: {formatted_volume}{volume_text}")
+    if not math.isnan(latest_volume_sma):
+        volume_lines.append(f"Vol SMA({VOLUME_MA_PERIOD}): {formatted_volume_sma}")
+    if not (obv_interpretation == "N/A"):
+        volume_lines.append(f"🟢 OBV: {obv_interpretation} ({obv_emoji})")
+    if not math.isnan(latest_obv):
+        volume_lines.append(f"OBV Value: {formatted_obv}")
+    if not math.isnan(latest_obv_sma):
+        volume_lines.append(f"OBV SMA({OBV_SMA_PERIOD}): {formatted_obv_sma}")
+    if not (vwap_val == "N/A"):
+        volume_lines.append(f"💲 VWAP: {format_price(vwap_val)}")
+    if not math.isnan(cmf_val):
+        volume_lines.append(f"💰 Chaikin Money Flow: {format_number(cmf_val, 4)}")
+    if not math.isnan(eom_val):
+        volume_lines.append(f"🟠 Ease of Movement: {format_number(eom_val, 4)}")
+    if not math.isnan(kvo_val):
+        volume_lines.append(f"🟤 Klinger Oscillator: {format_number(kvo_val, 4)}")
+    volume_text_group = "\n".join(volume_lines) if volume_lines else "-"
+
+    # Support/Resistance
+    support_resistance_lines = []
+    if not (formatted_support == "N/A"):
+        support_resistance_lines.append(f"🟩 Support ({SMA_PERIOD}p Low): ${formatted_support}")
+    if not (formatted_resistance == "N/A"):
+        support_resistance_lines.append(f"🟥 Resistance ({SMA_PERIOD}p High): ${formatted_resistance}")
+    support_resistance_text = "\n".join(support_resistance_lines) if support_resistance_lines else "-"
+
+    # Order Book
+    orderbook_lines = []
+    if not (formatted_largest_bid_qty == "N/A" or largest_bid_price == "N/A"):
+        orderbook_lines.append(f"🟦 Largest Buy Wall: {formatted_largest_bid_qty} @ ${largest_bid_price}")
+    if not (formatted_largest_ask_qty == "N/A" or largest_ask_price == "N/A"):
+        orderbook_lines.append(f"🟥 Largest Sell Wall: {formatted_largest_ask_qty} @ ${largest_ask_price}")
+    orderbook_text = "\n".join(orderbook_lines) if orderbook_lines else "-"
+
+    # Candlestick Patterns (keep as is, but add emoji)
+    candle_emoji = "🕯️"
+    candlestick_title = f"{candle_emoji} Candlestick Patterns (Last Candle)"
+
+    # --- Embed ---
     embed = {
         "title": f"📊 {ticker} Analysis ({candle})",
-        "description": f"**Overall Sentiment: {overall_conclusion}**",
-        "color": color,
+        "description": f"**Overall Sentiment:** 🟡 {overall_conclusion}",
+        "color": 0xFFD700 if "Bullish" in overall_conclusion else 0xFF0000 if "Bearish" in overall_conclusion else 0x808080,
         "fields": [
-            {"name": "Price", "value": f"${formatted_price}", "inline": True},
-            {"name": "24h Change", "value": str(formatted_change), "inline": True},
-            {"name": f"Price vs SMA({SMA_PERIOD})", "value": f"{price_vs_sma_emoji} {price_vs_sma_text}", "inline": True},
-            {"name": f"Support ({SMA_PERIOD}p Low)", "value": f"${formatted_support}", "inline": True},
-            {"name": f"Resistance ({SMA_PERIOD}p High)", "value": f"${formatted_resistance}", "inline": True},
-            {"name": "Volatility (ATR)", "value": f"${formatted_atr} ({atr_percentage})", "inline": True},
-            {"name": f"RSI({RSI_PERIOD})", "value": f"{formatted_rsi_val}{rsi_text}", "inline": True},
-            {"name": f"Stoch({STOCH_K},{STOCH_D}) %K", "value": f"{formatted_stoch_k}{stoch_text}", "inline": True},
-            {"name": "Stoch %D", "value": str(formatted_stoch_d), "inline": True},
-            {"name": f"MACD ({MACD_FAST},{MACD_SLOW},{MACD_SIGNAL})", "value": f"**{macd_interpretation}**", "inline": False},
-            {"name": "MACD Line", "value": str(formatted_macd_line), "inline": True},
-            {"name": "Signal Line", "value": str(formatted_macd_signal), "inline": True},
-            {"name": "Histogram", "value": str(formatted_macd_hist), "inline": True},
-            {"name": f"Volume{volume_text}", "value": str(formatted_volume), "inline": True},
-            {"name": f"Vol SMA({VOLUME_MA_PERIOD})", "value": str(formatted_volume_sma), "inline": True},
-            {"name": f"OBV ({obv_emoji})", "value": f"{obv_interpretation}", "inline": True},
-            {"name": f"OBV Value", "value": str(formatted_obv), "inline": True},
-            {"name": f"OBV SMA({OBV_SMA_PERIOD})", "value": str(formatted_obv_sma), "inline": True},
-            {"name": "\u200b", "value": "\u200b", "inline": True},
-            {"name": "🕯️ Candlestick Patterns (Last Candle)", "value": candlestick_text, "inline": False},
-            {"name": f"Largest Buy Wall (Top {ORDER_BOOK_DEPTH})", "value": f"{formatted_largest_bid_qty} @ ${largest_bid_price}", "inline": True},
-            {"name": f"Largest Sell Wall (Top {ORDER_BOOK_DEPTH})", "value": f"{formatted_largest_ask_qty} @ ${largest_ask_price}", "inline": True},
-            {"name": "\u200b", "value": "\u200b", "inline": True},
+            {"name": "💵 Price & Change", "value": f"${formatted_price} | 24h: {formatted_change}", "inline": True},
+            {"name": "🌈 Trend Indicators", "value": trend_text, "inline": False},
+            {"name": "⚡ Momentum Indicators", "value": momentum_text, "inline": False},
+            {"name": "🌊 Volatility Indicators", "value": volatility_text, "inline": False},
+            {"name": "🔊 Volume & Flow", "value": volume_text_group, "inline": False},
+            {"name": "🛡️ Support & Resistance", "value": support_resistance_text, "inline": True},
+            {"name": "📚 Order Book", "value": orderbook_text, "inline": True},
+            {"name": candlestick_title, "value": candlestick_text, "inline": False},
         ],
         "timestamp": formatted_timestamp,
         "footer": {"text": f"Data: Binance | Bot v2.0"}

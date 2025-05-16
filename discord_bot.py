@@ -3,6 +3,7 @@ import requests
 import nextcord
 from nextcord.ext import commands
 from dotenv import load_dotenv
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 from src.backtest.backtest_engine import run_backtest, save_backtest_results
 from src.agents.ben_graham import BenGrahamCryptoAgent
 from src.agents.bill_ackman import BillAckmanCryptoAgent
@@ -25,9 +26,12 @@ from src.data.binance_provider import BinanceDataProvider
 import io
 from datetime import datetime
 import logging
+from src.agents.deepseekAIHelper import analyze_indicators_with_llm
 
 # Load environment variables
-load_dotenv()
+
+# print("DEEPSEEK_API_KEY:", os.getenv("DEEPSEEK_API_KEY"))
+# print("GEMINI_API_KEY:", os.getenv("GEMINI_API_KEY"))
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 ALLOWED_GUILD_ID = int(os.getenv("ALLOWED_GUILD_ID"))  # Read and convert to int
 
@@ -58,22 +62,22 @@ AGENT_REGISTRY = {
 
 # Agent descriptions for /agents command
 AGENT_DESCRIPTIONS = {
-    "ben_graham": "Value investing legend. Focuses on undervalued assets and margin of safety.",
-    "bill_ackman": "Activist investor. Looks for catalysts and deep value opportunities.",
-    "binance_strategy": "Technical strategy using RSI and MACD on Binance data.",
-    "mean_reversion": "Buys low, sells high. Expects prices to revert to the mean.",
-    "michael_burry": "Contrarian investor. Famous for spotting bubbles and market mispricings.",
-    "sentiment": "Analyzes market sentiment from news and social data.",
-    "trend_following": "Follows price trends. Rides momentum up or down.",
-    "warren_buffett": "Long-term value investor. Focuses on quality businesses and compounding.",
-    "cathie_wood": "Growth and innovation investor. Focuses on disruptive tech.",
-    "charlie_munger": "Buffett's partner. Focuses on mental models and rational investing.",
-    "peter_lynch": "Growth at a reasonable price. Invests in what he understands.",
-    "stanley_druckenmiller": "Macro trader. Focuses on big economic trends and timing.",
-    "phil_fisher": "Scuttlebutt and qualitative analysis. Looks for outstanding companies.",
-    "valuation": "Estimates fair value using financial models.",
-    "fundamentals": "Analyzes company financials and health.",
-    "technicals": "Uses technical indicators and price action."
+    "ben_graham": "🏦 Value investing legend. Focuses on undervalued assets and margin of safety.",
+    "bill_ackman": "🦈 Activist investor. Looks for catalysts and deep value opportunities.",
+    "binance_strategy": "🤖 Binance Strategy: Multi-indicator technical strategy using RSI, MACD, SMA(20), Ichimoku, ADX, Stochastic, Stoch RSI, ATR, VWAP, and Volume. Combines trend, momentum, and volatility for robust signals!",
+    "mean_reversion": "🔄 Buys low, sells high. Expects prices to revert to the mean.",
+    "michael_burry": "💣 Contrarian investor. Famous for spotting bubbles and market mispricings.",
+    "sentiment": "📰 Analyzes market sentiment from news and social data.",
+    "trend_following": "📈 Follows price trends. Rides momentum up or down.",
+    "warren_buffett": "🧑‍💼 Long-term value investor. Focuses on quality businesses and compounding.",
+    "cathie_wood": "🚀 Growth and innovation investor. Focuses on disruptive tech.",
+    "charlie_munger": "🧠 Buffett's partner. Focuses on mental models and rational investing.",
+    "peter_lynch": "🧢 Growth at a reasonable price. Invests in what he understands.",
+    "stanley_druckenmiller": "🌎 Macro trader. Focuses on big economic trends and timing.",
+    "phil_fisher": "🔬 Scuttlebutt and qualitative analysis. Looks for outstanding companies.",
+    "valuation": "💰 Estimates fair value using financial models.",
+    "fundamentals": "📊 Analyzes company financials and health.",
+    "technicals": "📊 Uses technical indicators and price action."
 }
 
 @bot.event
@@ -95,10 +99,13 @@ async def consult(
     )
 ):
     await interaction.response.defer()
-
-    # Parse agent names into a list
+    ticker = ticker.upper()
+    timeframe = timeframe.lower()
+    # Check for uppercase 'M' in timeframe
+    if 'M' in timeframe:
+        await interaction.followup.send("❌ Please use lowercase 'm' for minutes (e.g., '1m', '15m'). Uppercase 'M' means 'month' on Binance.", ephemeral=True)
+        return
     selected_agents = [a.strip() for a in agents.split(",") if a.strip()]
-
     payload = {
         "ticker": ticker,
         "timeframe": timeframe,
@@ -260,15 +267,25 @@ async def consult(
             )
             embed.set_footer(text="Powered by CryptoConsult AI")
         else:
+            # Friendly error for user input
+            try:
+                err_json = response.json()
+                err_msg = err_json.get("error", "Unknown error")
+            except Exception:
+                err_msg = response.text
+            if "Invalid agent" in err_msg:
+                err_msg += "\n➡️ Please use `/agents` to see the correct agent IDs."
+            if "Invalid timeframe" in err_msg:
+                err_msg += "\n➡️ Please check the supported timeframes (e.g., 1m, 5m, 15m, 1h, 1d)."
             embed = nextcord.Embed(
-                title="❌ CryptoConsult Error",
-                description=f"Backend error: {response.status_code} – {response.text}",
+                title="❌ Input Error",
+                description=err_msg,
                 color=nextcord.Color.red()
             )
     except Exception as e:
         embed = nextcord.Embed(
             title="❌ CryptoConsult Error",
-            description=f"Error contacting backend: {e}",
+            description="An error occurred. Please check your input (ticker, agent, timeframe) and try again. Use `/agents` for agent IDs.",
             color=nextcord.Color.red()
         )
 
@@ -290,9 +307,16 @@ async def agent_name_autocomplete(interaction: nextcord.Interaction, current: st
 
 @bot.slash_command(name="agents", description="List all available agents and their descriptions")
 async def agents(interaction: nextcord.Interaction):
-    embed = nextcord.Embed(title="Available Agents", color=nextcord.Color.blue())
+    embed = nextcord.Embed(title="🧠 Available Agents", color=nextcord.Color.gold())
     for agent_id, desc in AGENT_DESCRIPTIONS.items():
-        embed.add_field(name=f"`{agent_id}`", value=desc, inline=False)
+        # Extract emoji and description
+        parts = desc.split(' ', 1)
+        emoji = parts[0] if len(parts) > 1 else ''
+        description = parts[1] if len(parts) > 1 else desc
+        display_name = agent_id.replace('_', ' ').title()
+        field_title = f"{emoji} **`{agent_id}` {display_name}**"
+        embed.add_field(name=field_title, value=description, inline=False)
+    embed.set_footer(text="Tip: Use /consult with any agent for a detailed, actionable analysis!")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.slash_command(name="backtest", description="Run a backtest simulation")
@@ -307,20 +331,37 @@ async def backtest(
     leverage: float = nextcord.SlashOption(description="Leverage (default: 1.0)", default=1.0)
 ):
     await interaction.response.defer()
+    ticker = ticker.upper()
+    candle = candle.lower()
+    if 'M' in candle:
+        await interaction.followup.send("❌ Please use lowercase 'm' for minutes (e.g., '1m', '15m'). Uppercase 'M' means 'month' on Binance.", ephemeral=True)
+        return
+    if observations > 200:
+        await interaction.followup.send("❌ Observations cannot exceed 200. Please choose a value between 1 and 200.", ephemeral=True)
+        return
     # Send confirmation immediately
     await interaction.followup.send("✅ Backtest started! Results will be sent to your DM.", ephemeral=True)
     try:
         agent = get_agent_instance(agent_name)
         if agent is None:
-            await interaction.user.send(f"❌ Agent '{agent_name}' not found!")
+            await interaction.user.send(f"❌ Agent '{agent_name}' not found! Use `/agents` to see valid agent IDs.")
             return
-        result, _ = run_backtest(
-            ticker=ticker,
-            timeframe=candle,
-            agents=agent_name,
-            observations=observations,
-            leverage=leverage
-        )
+        try:
+            result, _ = run_backtest(
+                ticker=ticker,
+                timeframe=candle,
+                agents=agent_name,
+                observations=observations,
+                leverage=leverage
+            )
+        except Exception as e:
+            err_msg = str(e)
+            if "Not enough historical data" in err_msg:
+                await interaction.user.send(f"❌ Not enough historical data for your request. Please try a lower number of observations or a more common symbol/timeframe.")
+                return
+            else:
+                await interaction.user.send(f"❌ Error running backtest: {err_msg}")
+                return
         if result is None:
             await interaction.user.send("❌ Failed to run backtest. Please check your parameters.")
             return
@@ -329,24 +370,41 @@ async def backtest(
             action_counts[action['action']] = action_counts.get(action['action'], 0) + 1
         # Only show the summary in the embed
         agent_display = agent_name.replace('_', ' ').title()
-        stats_block = (
-            f"**Total Return:** `{result['total_return']*100:.2f}%`\n"
-            f"**Max Drawdown:** `{result['max_drawdown']*100:.2f}%`\n"
-            f"**Win Rate:** `{result['win_rate']*100:.2f}%`\n"
-            f"**Number of Trades:** `{result['num_trades']}`\n"
-            f"**Final Balance:** `${result['final_balance']:.2f}`\n"
-            f"**Best Trade:** `{result['best_trade']*100:.2f}%`\n"
-            f"**Worst Trade:** `{result['worst_trade']*100:.2f}%`\n"
+        action_emoji = {
+            'HOLD': ':pause_button:',
+            'LONG': ':arrow_up:',
+            'SHORT': ':arrow_down:',
+            'BUY': ':shopping_cart:',
+            'SELL': ':money_with_wings:',
+            'STOP_LOSS': ':octagonal_sign:',
+            'TAKE_PROFIT': ':tada:',
+            'REVERSE': ':arrows_counterclockwise:',
+            'CLOSE': ':stop_button:',
+            'LIQUIDATION': ':skull_crossbones:'
+        }
+        actions_summary = ' '.join(
+            f"{action_emoji.get(action, '')} `{action}` × {count}" for action, count in action_counts.items()
         )
-        action_summary = " | ".join(f"{k}: {v}" for k, v in action_counts.items())
+        color = nextcord.Color.green() if result['total_return'] > 0 else nextcord.Color.red() if result['total_return'] < 0 else nextcord.Color.blue()
         embed = nextcord.Embed(
-            title=f"Backtest Results for {ticker.upper()} ({candle}) - {agent_display}",
+            title=f":chart_with_upwards_trend: Backtest Results for {ticker.upper()} ({candle}) — {agent_display}",
             description=(
-                f"**{agent_display}** agent returned **{result['total_return']*100:.2f}%** with a **{result['win_rate']*100:.2f}% win rate** over {observations} candles ({leverage}x leverage).\n\n"
-                + stats_block
-                + f"**Agent Action Summary:** `{action_summary}`"
+                f":robot: **{agent_display} agent returned `{result['total_return']*100:.2f}%` with a `{result['win_rate']*100:.2f}%` win rate over `{observations}` candles (`{leverage}x` leverage).**\n"
+                f"---\n"
+                f"**:moneybag: Total Return:** `{result['total_return']*100:.2f}%`\n"
+                f"**:vertical_traffic_light: Max Drawdown:** `{result['max_drawdown']*100:.2f}%`\n"
+                f"**:dart: Win Rate:** `{result['win_rate']*100:.2f}%`\n"
+                f"**:repeat: Number of Trades:** `{result['num_trades']}`\n"
+                f"**:bank: Final Balance:** `${result['final_balance']:.2f}`\n"
+                f"**:trophy: Best Trade:** `{result['best_trade']:.2f}%`\n"
+                f"**:warning: Worst Trade:** `{result['worst_trade']:.2f}%`\n"
+                f"---\n"
+                f"**:clipboard: Agent Action Summary:**\n{actions_summary}\n"
+                f"---\n"
+                f":page_facing_up: **Detailed backtest CSV attached!**\n"
+                f"_Powered by CryptoConsult AI Backtest_"
             ),
-            color=nextcord.Color.green() if result['total_return'] > 0 else nextcord.Color.red()
+            color=color
         )
         embed.set_footer(text="Powered by CryptoConsult AI Backtest")
         await interaction.user.send(embed=embed)
@@ -367,7 +425,7 @@ async def backtest(
             csv_file = nextcord.File(fp=output, filename=f"backtest_{ticker}_{candle}_{agent_name}.csv")
             await interaction.user.send("📊 Detailed backtest CSV attached:", file=csv_file)
     except Exception as e:
-        await interaction.user.send(f"❌ Error running backtest: {str(e)}")
+        await interaction.user.send("❌ Error running backtest. Please check your input (ticker, agent, timeframe). Use `/agents` for agent IDs.")
 
 def get_agent_instance(agent_name):
     if agent_name not in AGENT_REGISTRY:
@@ -384,11 +442,16 @@ def get_agent_instance(agent_name):
 async def techs(
     interaction: nextcord.Interaction,
     ticker: str = nextcord.SlashOption(description="Ticker symbol (e.g. BTCUSDT)"),
-    candle: str = nextcord.SlashOption(description="Candle interval (e.g. 1m, 5m, 15m, 1h, 1d)")
+    candle: str = nextcord.SlashOption(description="Candle interval (e.g., 1m, 5m, 15m, 1h, 1d)")
 ):
     logging.basicConfig(level=logging.INFO)
     logging.info(f"/techs called with ticker={ticker}, candle={candle}, user={interaction.user}")
     await interaction.response.defer(ephemeral=True)
+    ticker = ticker.upper()
+    candle = candle.lower()
+    if 'M' in candle:
+        await interaction.followup.send("❌ Please use lowercase 'm' for minutes (e.g., '1m', '15m'). Uppercase 'M' means 'month' on Binance.", ephemeral=True)
+        return
     try:
         api_key = os.getenv("BINANCE_API_KEY", "")
         api_secret = os.getenv("BINANCE_API_SECRET", "")
@@ -417,5 +480,160 @@ async def techs(
     except Exception as e:
         logging.exception(f"Exception in /techs command: {e}")
         await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+@bot.slash_command(name="tickers_binance", description="List all Binance tickers and their support for Spot, Margin, and Futures trading (CSV export)")
+async def tickers_binance(interaction: nextcord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    margin_error = None
+    futures_error = None
+    try:
+        api_key = os.getenv("BINANCE_API_KEY", "")
+        api_secret = os.getenv("BINANCE_API_SECRET", "")
+        provider = BinanceDataProvider(api_key, api_secret)
+        spot_info = provider.client.get_exchange_info()
+        spot_symbols = {s['symbol']: s for s in spot_info['symbols']}
+        # Margin support
+        margin_pairs = set()
+        try:
+            margin_info = provider.client.get_margin_all_pairs()
+            margin_pairs = set(pair['symbol'] for pair in margin_info)
+        except Exception as e:
+            margin_error = str(e)
+            print(f"[ERROR] Could not fetch margin pairs: {margin_error}")
+        # Futures support
+        futures_symbols = set()
+        try:
+            from binance.um_futures import UMFutures
+            futures_client = UMFutures(key=api_key, secret=api_secret)
+            fut_info = futures_client.exchange_info()
+            for s in fut_info['symbols']:
+                futures_symbols.add(s['symbol'])
+        except Exception as e:
+            futures_error = str(e)
+            print(f"[ERROR] Could not fetch futures pairs: {futures_error}")
+        # Compose CSV
+        import csv
+        import io
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Symbol", "Base Asset", "Quote Asset", "Spot", "Margin", "Futures", "Status"])
+        for symbol, info in spot_symbols.items():
+            base = info.get('baseAsset', '')
+            quote = info.get('quoteAsset', '')
+            spot = 'Yes' if info.get('status', '') == 'TRADING' else 'No'
+            margin = 'Yes' if symbol in margin_pairs else 'No'
+            futures = 'Yes' if symbol in futures_symbols else 'No'
+            status = info.get('status', '')
+            writer.writerow([symbol, base, quote, spot, margin, futures, status])
+        output.seek(0)
+        csv_file = nextcord.File(fp=output, filename="binance_tickers.csv")
+        msg = "📄 Binance Tickers (Spot, Margin, Futures):"
+        if margin_error or futures_error:
+            msg += "\n⚠️ Some data could not be fetched:\n"
+            if margin_error:
+                msg += f"• Margin: {margin_error}\n"
+            if futures_error:
+                msg += f"• Futures: {futures_error}\n"
+        await interaction.user.send(msg, file=csv_file)
+        await interaction.followup.send("✅ Check your DMs for the full Binance tickers list!", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error fetching tickers: {e}", ephemeral=True)
+
+@bot.slash_command(
+    name="whales",
+    description="Show the biggest whale orders for a Binance ticker",
+    guild_ids=[1214331987666542642]
+)
+async def whales(
+    interaction: nextcord.Interaction,
+    ticker: str = nextcord.SlashOption(description="Ticker symbol (e.g. BTCUSDT)")
+):
+    await interaction.response.defer(ephemeral=True)
+    ticker = ticker.upper()
+    try:
+        api_key = os.getenv("BINANCE_API_KEY", "")
+        api_secret = os.getenv("BINANCE_API_SECRET", "")
+        provider = BinanceDataProvider(api_key, api_secret)
+        # Fetch order book (depth)
+        depth = provider.client.get_order_book(symbol=ticker, limit=100)
+        bids = depth.get('bids', [])
+        asks = depth.get('asks', [])
+        if not bids or not asks:
+            await interaction.user.send(f"❌ No order book data found for {ticker}.")
+            await interaction.followup.send("❌ No whale data found. Check your DM for details.", ephemeral=True)
+            return
+        # Find biggest bid and ask by quantity
+        biggest_bid = max(bids, key=lambda x: float(x[1]))
+        biggest_ask = max(asks, key=lambda x: float(x[1]))
+        bid_price, bid_qty = float(biggest_bid[0]), float(biggest_bid[1])
+        ask_price, ask_qty = float(biggest_ask[0]), float(biggest_ask[1])
+        bid_value = bid_price * bid_qty
+        ask_value = ask_price * ask_qty
+        embed = nextcord.Embed(
+            title=f":whale: Whale Orders for {ticker}",
+            description=(
+                f"**:money_with_wings: Biggest Buy (Bid):**\n"
+                f"> **Price:** `${bid_price:,.8f}`\n"
+                f"> **Quantity:** `{bid_qty:,.4f}`\n"
+                f"> **Value:** `${bid_value:,.2f}`\n\n"
+                f"**:moneybag: Biggest Sell (Ask):**\n"
+                f"> **Price:** `${ask_price:,.8f}`\n"
+                f"> **Quantity:** `{ask_qty:,.4f}`\n"
+                f"> **Value:** `${ask_value:,.2f}`"
+            ),
+            color=nextcord.Color.purple()
+        )
+        embed.set_footer(text="Powered by CryptoConsult AI Whales")
+        await interaction.user.send(embed=embed)
+        await interaction.followup.send("✅ Whale order details sent to your DM!", ephemeral=True)
+    except Exception as e:
+        await interaction.user.send(f"❌ Error fetching whale orders: {e}")
+        await interaction.followup.send("❌ Error fetching whale orders. Check your DM for details.", ephemeral=True)
+
+@bot.slash_command(
+    name="techs_analysis",
+    description="AI analysis of technical indicators for a ticker and candle interval",
+    guild_ids=[1214331987666542642]  # Remove or adjust for global use
+)
+async def techs_analysis(
+    interaction: nextcord.Interaction,
+    ticker: str = nextcord.SlashOption(description="Ticker symbol (e.g. BTCUSDT)"),
+    candle: str = nextcord.SlashOption(description="Candle interval (e.g., 1m, 15m, 1h, 1d)", default="1h"),
+    model: str = nextcord.SlashOption(description="LLM model (deepseek/gemini)", required=False, default="deepseek", choices=["deepseek", "gemini"])
+):
+    await interaction.response.defer(ephemeral=True)
+    ticker = ticker.upper()
+    candle = candle.lower()
+    try:
+        api_key = os.getenv("BINANCE_API_KEY", "")
+        api_secret = os.getenv("BINANCE_API_SECRET", "")
+        provider = BinanceDataProvider(api_key, api_secret)
+        # Use your existing get_techs_embed to get the indicator summary
+        result = get_techs_embed(ticker, candle, provider)
+        if "error" in result:
+            await interaction.user.send(f"❌ {result['error']}")
+            await interaction.followup.send("❌ Error fetching indicators. Check your DM for details.", ephemeral=True)
+            return
+        # Compose a summary string for the LLM (truncate if needed)
+        embed_dict = result["embeds"][0]
+        indicator_summary = embed_dict.get("description", "")
+        for field in embed_dict.get("fields", []):
+            indicator_summary += f"\n{field['name']}: {field['value']}"
+        # Truncate to ~2000 chars for LLM and Discord safety
+        indicator_summary = indicator_summary[:2000]
+        # Call LLM
+        analysis = analyze_indicators_with_llm(indicator_summary, model_preference=model)
+        # Compose Discord embed
+        embed = nextcord.Embed(
+            title=f"🤖 Techs Analysis for {ticker} ({candle})",
+            description=f"**AI Model:** `{model}`\n\n{analysis}",
+            color=nextcord.Color.teal()
+        )
+        embed.set_footer(text="Powered by DeepSeek/Gemini AI | Data: Binance")
+        await interaction.user.send(embed=embed)
+        await interaction.followup.send("✅ Techs analysis sent to your DM!", ephemeral=True)
+    except Exception as e:
+        await interaction.user.send(f"❌ Error in /techs_analysis: {e}")
+        await interaction.followup.send("❌ Error in /techs_analysis. Check your DM for details.", ephemeral=True)
 
 bot.run(TOKEN)

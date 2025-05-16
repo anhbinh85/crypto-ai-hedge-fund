@@ -6,6 +6,7 @@ import logging
 from src.data.binance_provider import BinanceDataProvider
 from src.tools.binance_executor import BinanceExecutor
 from src.config.binance_config import BinanceConfig
+import pandas_ta as ta
 
 class BinanceStrategy:
     def __init__(
@@ -19,10 +20,13 @@ class BinanceStrategy:
         self.data_provider = data_provider
         self.executor = executor
         self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)  # Ensure INFO logs are shown
         self.positions: Dict[str, Dict] = {}  # Current positions
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate technical indicators for the strategy."""
+        if df is None:
+            raise ValueError("Input DataFrame is None. No historical data available for indicator calculation.")
         # RSI
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=self.config.rsi_period).mean()
@@ -36,6 +40,43 @@ class BinanceStrategy:
         df['macd'] = exp1 - exp2
         df['signal'] = df['macd'].ewm(span=self.config.macd_signal, adjust=False).mean()
         df['histogram'] = df['macd'] - df['signal']
+
+        # SMA(20)
+        df['sma20'] = df['close'].rolling(window=20).mean()
+
+        # Ichimoku
+        ichimoku_df, _ = ta.ichimoku(df['high'], df['low'], df['close'])
+        if ichimoku_df is not None:
+            for col in ichimoku_df.columns:
+                df[col] = ichimoku_df[col]
+
+        # ADX(14)
+        adx = ta.adx(df['high'], df['low'], df['close'], length=14)
+        if adx is not None:
+            for col in adx.columns:
+                df[col] = adx[col]
+
+        # Stochastic(14,3)
+        stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
+        if stoch is not None:
+            for col in stoch.columns:
+                df[col] = stoch[col]
+
+        # Stoch RSI(14)
+        stochrsi = ta.stochrsi(df['close'], length=14)
+        if stochrsi is not None:
+            for col in stochrsi.columns:
+                df[col] = stochrsi[col]
+
+        # ATR(14)
+        df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+
+        # Volume SMA(20)
+        df['vol_sma20'] = df['volume'].rolling(window=20).mean()
+
+        # VWAP
+        vwap = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
+        df['vwap'] = vwap
 
         return df
 
@@ -194,41 +235,216 @@ class BinanceStrategy:
             self.run_strategy(symbol)
 
     def consult_crypto(self, symbol, timeframe, window_df=None, model_used="binance_strategy"):
-        # Use window_df if provided, else fetch data
+        import math
         if window_df is not None:
             df = window_df.copy()
         else:
-            df = self.data_provider.get_historical_klines(symbol, interval=timeframe, limit=100)
-        df = self.calculate_indicators(df)
-        latest_close = df['close'].iloc[-1]
-        rsi = df['rsi'].iloc[-1]
-        macd = df['macd'].iloc[-1]
-        signal_line = df['signal'].iloc[-1]
-        buy_signal, sell_signal = self.generate_signals(df)
-        if buy_signal:
+            df = self.data_provider.get_historical_klines(symbol, interval=timeframe, limit=120)
+        # Add detailed logging for debugging
+        self.logger.info(f"Fetched klines for {symbol} {timeframe}: type={type(df)}, is None={df is None}")
+        print(f"[DEBUG] Fetched klines for {symbol} {timeframe}: type={type(df)}, is None={df is None}")
+        if df is not None:
+            self.logger.info(f"DataFrame shape: {df.shape}, columns: {list(df.columns) if hasattr(df, 'columns') else 'N/A'}")
+            print(f"[DEBUG] DataFrame shape: {df.shape}, columns: {list(df.columns) if hasattr(df, 'columns') else 'N/A'}")
+            try:
+                self.logger.info(f"DataFrame head:\n{df.head()}\n")
+                print(f"[DEBUG] DataFrame head:\n{df.head()}\n")
+            except Exception as e:
+                self.logger.warning(f"Could not print DataFrame head: {e}")
+                print(f"[DEBUG] Could not print DataFrame head: {e}")
+        if df is None or df.empty:
+            self.logger.error(f"No historical data found for {symbol} on {timeframe} in consult_crypto.")
+            print(f"[DEBUG] No historical data found for {symbol} on {timeframe} in consult_crypto.")
+            return {
+                "agent": "binance_strategy",
+                "signal": "N/A",
+                "confidence": 0,
+                "reasoning": f"No historical data found for {symbol} on {timeframe}. Please check the symbol and timeframe.",
+                "action": "HOLD",
+                "quantity": 0,
+                "quantity_explanation": "No data available.",
+                "entry_condition": "N/A",
+                "exit_condition": "N/A",
+                "reversal_signal": "N/A",
+                "stop_loss_pct": 0.0,
+                "take_profit_pct": 0.0,
+                "suggested_duration": "N/A",
+                "model_used": model_used,
+                "data_summary": f"No data for {symbol} on {timeframe}.",
+                "discord_message": f"**{symbol} ({timeframe})**\nNo historical data found. Please check the symbol and timeframe."
+            }
+        # Always slice to last 30 rows for indicator calculation
+        if len(df) > 30:
+            df = df.tail(30).copy()
+        # Check for required columns
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            self.logger.error(f"Missing columns {missing_cols} for {symbol} on {timeframe} in consult_crypto. Columns present: {list(df.columns)}")
+            print(f"[DEBUG] Missing columns {missing_cols} for {symbol} on {timeframe} in consult_crypto. Columns present: {list(df.columns)}")
+            return {
+                "agent": "binance_strategy",
+                "signal": "N/A",
+                "confidence": 0,
+                "reasoning": f"Missing required data columns: {', '.join(missing_cols)} for {symbol} on {timeframe}. Please check the symbol and timeframe.",
+                "action": "HOLD",
+                "quantity": 0,
+                "quantity_explanation": "No data available.",
+                "entry_condition": "N/A",
+                "exit_condition": "N/A",
+                "reversal_signal": "N/A",
+                "stop_loss_pct": 0.0,
+                "take_profit_pct": 0.0,
+                "suggested_duration": "N/A",
+                "model_used": model_used,
+                "data_summary": f"No data for {symbol} on {timeframe}.",
+                "discord_message": f"**{symbol} ({timeframe})**\nMissing required data columns: {', '.join(missing_cols)}. Please check the symbol and timeframe."
+            }
+        # Check for minimum data length
+        if len(df) < 30:
+            self.logger.warning(f"Not enough data for {symbol} on {timeframe}: only {len(df)} rows. Minimum required: 30.")
+            print(f"[DEBUG] Not enough data for {symbol} on {timeframe}: only {len(df)} rows. Minimum required: 30.")
+            return {
+                "agent": "binance_strategy",
+                "signal": "N/A",
+                "confidence": 0,
+                "reasoning": f"Not enough data for {symbol} on {timeframe}. Got {len(df)} rows, need at least 30 for analysis.",
+                "action": "HOLD",
+                "quantity": 0,
+                "quantity_explanation": "Not enough data.",
+                "entry_condition": "N/A",
+                "exit_condition": "N/A",
+                "reversal_signal": "N/A",
+                "stop_loss_pct": 0.0,
+                "take_profit_pct": 0.0,
+                "suggested_duration": "N/A",
+                "model_used": model_used,
+                "data_summary": f"Not enough data for {symbol} on {timeframe}.",
+                "discord_message": f"**{symbol} ({timeframe})**\nNot enough data for analysis. Please try a different timeframe or reduce observations."
+            }
+        # Robust error handling for indicator calculation
+        try:
+            df = self.calculate_indicators(df)
+        except Exception as e:
+            self.logger.error(f"Indicator calculation failed for {symbol} on {timeframe}: {e}")
+            print(f"[DEBUG] Indicator calculation failed for {symbol} on {timeframe}: {e}")
+            return {
+                "agent": "binance_strategy",
+                "signal": "N/A",
+                "confidence": 0,
+                "reasoning": f"Indicator calculation failed: {e}",
+                "action": "HOLD",
+                "quantity": 0,
+                "quantity_explanation": "Indicator calculation failed.",
+                "entry_condition": "N/A",
+                "exit_condition": "N/A",
+                "reversal_signal": "N/A",
+                "stop_loss_pct": 0.0,
+                "take_profit_pct": 0.0,
+                "suggested_duration": "N/A",
+                "model_used": model_used,
+                "data_summary": f"Indicator calculation failed for {symbol} on {timeframe}.",
+                "discord_message": f"**{symbol} ({timeframe})**\nIndicator calculation failed: {e}"
+            }
+        # Check for NaN in key indicators
+        latest = df.iloc[-1]
+        key_indicators = ['sma20', 'rsi', 'macd', 'signal', 'ADX_14', 'STOCHk_14_3_3', 'STOCHRSIk_14_14_3_3']
+        for ind in key_indicators:
+            if ind not in latest or pd.isna(latest[ind]):
+                self.logger.warning(f"Key indicator {ind} is NaN or missing for {symbol} on {timeframe}.")
+                print(f"[DEBUG] Key indicator {ind} is NaN or missing for {symbol} on {timeframe}.")
+                return {
+                    "agent": "binance_strategy",
+                    "signal": "N/A",
+                    "confidence": 0,
+                    "reasoning": f"Key indicator {ind} is NaN or missing. Not enough data for analysis.",
+                    "action": "HOLD",
+                    "quantity": 0,
+                    "quantity_explanation": "Key indicator missing or NaN.",
+                    "entry_condition": "N/A",
+                    "exit_condition": "N/A",
+                    "reversal_signal": "N/A",
+                    "stop_loss_pct": 0.0,
+                    "take_profit_pct": 0.0,
+                    "suggested_duration": "N/A",
+                    "model_used": model_used,
+                    "data_summary": f"Key indicator {ind} missing or NaN for {symbol} on {timeframe}.",
+                    "discord_message": f"**{symbol} ({timeframe})**\nKey indicator {ind} missing or NaN. Not enough data for analysis."
+                }
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+        # Extract indicators
+        close = latest['close']
+        sma20 = latest.get('sma20', float('nan'))
+        rsi = latest.get('rsi', float('nan'))
+        macd = latest.get('macd', float('nan'))
+        signal_line = latest.get('signal', float('nan'))
+        adx = latest.get('ADX_14', float('nan'))
+        stoch_k = latest.get('STOCHk_14_3_3', float('nan'))
+        stoch_d = latest.get('STOCHd_14_3_3', float('nan'))
+        stochrsi_k = latest.get('STOCHRSIk_14_14_3_3', float('nan'))
+        stochrsi_d = latest.get('STOCHRSId_14_14_3_3', float('nan'))
+        atr = latest.get('atr', float('nan'))
+        vol = latest.get('volume', float('nan'))
+        vol_sma20 = latest.get('vol_sma20', float('nan'))
+        vwap = latest.get('vwap', float('nan'))
+        ichimoku_conv = latest.get('ITS_9', float('nan'))
+        ichimoku_base = latest.get('IKS_26', float('nan'))
+        ichimoku_a = latest.get('ISA_9', float('nan'))
+        ichimoku_b = latest.get('ISB_26', float('nan'))
+        # Signal logic
+        macd_bullish = prev['macd'] < prev['signal'] and macd > signal_line
+        macd_bearish = prev['macd'] > prev['signal'] and macd < signal_line
+        adx_strong = adx > 20 if not math.isnan(adx) else False
+        stochrsi_oversold = stochrsi_k < 0.2 if not math.isnan(stochrsi_k) else False
+        stochrsi_overbought = stochrsi_k > 0.8 if not math.isnan(stochrsi_k) else False
+        price_above_sma = close > sma20 if not math.isnan(sma20) else False
+        price_below_sma = close < sma20 if not math.isnan(sma20) else False
+        # Decision
+        if (
+            rsi < self.config.rsi_oversold and
+            macd_bullish and
+            adx_strong and
+            stochrsi_oversold and
+            price_above_sma
+        ):
             signal = "BULLISH"
             action = "LONG"
-            confidence = 80
-            reasoning = "RSI is oversold and MACD bullish crossover."
-            entry_condition = f"Buy if RSI < {self.config.rsi_oversold} and MACD crosses above signal."
-            exit_condition = "Sell if RSI > overbought or MACD crosses below signal."
-        elif sell_signal:
+            confidence = 90
+            reasoning = "RSI oversold, MACD bullish crossover, ADX strong, Stoch RSI oversold, price above SMA(20)."
+            entry_condition = f"Buy if all bullish conditions met."
+            exit_condition = "Sell if any bullish condition fails."
+        elif (
+            rsi > self.config.rsi_overbought and
+            macd_bearish and
+            adx_strong and
+            stochrsi_overbought and
+            price_below_sma
+        ):
             signal = "BEARISH"
             action = "SHORT"
-            confidence = 80
-            reasoning = "RSI is overbought and MACD bearish crossunder."
-            entry_condition = f"Sell if RSI > {self.config.rsi_overbought} and MACD crosses below signal."
-            exit_condition = "Buy if RSI < oversold or MACD crosses above signal."
+            confidence = 90
+            reasoning = "RSI overbought, MACD bearish crossunder, ADX strong, Stoch RSI overbought, price below SMA(20)."
+            entry_condition = f"Sell if all bearish conditions met."
+            exit_condition = "Buy if any bearish condition fails."
         else:
             signal = "NEUTRAL"
             action = "HOLD"
             confidence = 60
-            reasoning = "No strong signal from RSI or MACD."
-            entry_condition = "Wait for clear signal."
+            reasoning = "No strong multi-indicator signal."
+            entry_condition = "Wait for clear multi-indicator signal."
             exit_condition = "N/A"
+        # Format numbers for summary
+        def fmt(val, dec=2):
+            if val is None or (isinstance(val, float) and (math.isnan(val) or val == float('nan'))):
+                return "N/A"
+            return f"{val:.{dec}f}"
         data_summary = (
-            f"{symbol} on {timeframe} timeframe. Latest price: {latest_close:.2f}. "
-            f"RSI: {rsi:.2f}. MACD: {macd:.2f}, Signal: {signal_line:.2f}."
+            f"{symbol} on {timeframe} timeframe.\n"
+            f"Price: {fmt(close)} | SMA(20): {fmt(sma20)} | RSI: {fmt(rsi)} | MACD: {fmt(macd)} | Signal: {fmt(signal_line)}\n"
+            f"ADX(14): {fmt(adx)} | Stoch(14,3): {fmt(stoch_k)}/{fmt(stoch_d)} | Stoch RSI: {fmt(stochrsi_k,2)}/{fmt(stochrsi_d,2)}\n"
+            f"ATR(14): {fmt(atr)} | Vol: {fmt(vol)} | Vol SMA(20): {fmt(vol_sma20)} | VWAP: {fmt(vwap)}\n"
+            f"Ichimoku Conv/Base/A/B: {fmt(ichimoku_conv)}/{fmt(ichimoku_base)}/{fmt(ichimoku_a)}/{fmt(ichimoku_b)}"
         )
         return {
             "agent": "binance_strategy",
@@ -237,10 +453,10 @@ class BinanceStrategy:
             "reasoning": reasoning,
             "action": action,
             "quantity": 1 if action in ["LONG", "SHORT"] else 0,
-            "quantity_explanation": "RSI/MACD-based position size.",
+            "quantity_explanation": "Multi-indicator position size.",
             "entry_condition": entry_condition,
             "exit_condition": exit_condition,
-            "reversal_signal": "If MACD/RSI reverses, consider stop-loss.",
+            "reversal_signal": "If multi-indicator signal reverses, consider stop-loss.",
             "stop_loss_pct": 0.04,
             "take_profit_pct": 0.10,
             "suggested_duration": "Hold until signal reverses.",
@@ -249,12 +465,15 @@ class BinanceStrategy:
             "discord_message": (
                 f"**{symbol} ({timeframe})**\n"
                 f"**Technical Summary:**\n"
-                f"`Price: {latest_close:.2f} | RSI: {rsi:.2f} | MACD: {macd:.2f} | Signal: {signal_line:.2f}`\n"
+                f"`Price: {fmt(close)} | SMA(20): {fmt(sma20)} | RSI: {fmt(rsi)} | MACD: {fmt(macd)} | Signal: {fmt(signal_line)}`\n"
+                f"`ADX(14): {fmt(adx)} | Stoch(14,3): {fmt(stoch_k)}/{fmt(stoch_d)} | Stoch RSI: {fmt(stochrsi_k,2)}/{fmt(stochrsi_d,2)}`\n"
+                f"`ATR(14): {fmt(atr)} | Vol: {fmt(vol)} | Vol SMA(20): {fmt(vol_sma20)} | VWAP: {fmt(vwap)}`\n"
+                f"`Ichimoku Conv/Base/A/B: {fmt(ichimoku_conv)}/{fmt(ichimoku_base)}/{fmt(ichimoku_a)}/{fmt(ichimoku_b)}`\n"
                 f"**Signal:** {signal}\n"
                 f"**Action:** {action} | **Quantity:** 1\n"
                 f"**Entry:** {entry_condition}\n"
                 f"**Exit:** {exit_condition}\n"
-                f"**Reversal:** If MACD/RSI reverses, consider stop-loss.\n"
+                f"**Reversal:** If multi-indicator signal reverses, consider stop-loss.\n"
                 f"**Confidence:** {confidence}%\n"
                 f"**Reasoning:** {reasoning}\n"
                 f"**Model Used:** {model_used}\n"
