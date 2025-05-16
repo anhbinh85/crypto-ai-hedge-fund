@@ -1,121 +1,147 @@
-# Binance Trading Bot
+# AI Hedge Fund: Multi-Agent Crypto Trading Bot
 
-A cryptocurrency trading bot that uses technical analysis to make trading decisions on Binance. The bot implements a strategy based on RSI and MACD indicators, with configurable risk management parameters.
+A modular, multi-agent cryptocurrency trading bot inspired by legendary investors (e.g., Warren Buffett, Ben Graham, Cathie Wood, Bill Ackman, Michael Burry, and more). Features real-time trading, advanced technical/fundamental analysis, backtesting, and a beautiful Discord bot interface for actionable, detailed insights.
 
-## Features
+---
 
-- Real-time trading on Binance
-- Technical analysis using RSI and MACD indicators
-- Configurable trading pairs and parameters
-- Risk management with stop-loss and take-profit
-- Position sizing based on portfolio percentage
-- Detailed logging of all trading activities
+## 🚀 Features
 
-## Prerequisites
+- **Multi-Agent System**: Each agent mimics a famous investor or strategy (value, growth, macro, technical, sentiment, etc.).
+- **Discord Bot**: Get detailed, actionable, and visually appealing trading analysis via Discord DMs and slash commands.
+- **Backtesting Engine**: Simulate strategies and agents on historical data with detailed performance metrics.
+- **Technical & Fundamental Analysis**: Combines TA (RSI, MACD, etc.) and FA (valuation, financials, sentiment).
+- **Risk Management**: Position sizing, stop-loss, take-profit, and risk scoring.
+- **Modular & Extensible**: Easily add new agents, strategies, or data sources.
+- **Logging**: All trades, signals, and errors are logged for transparency.
 
-- Python 3.8 or higher
-- Binance account with API access
-- API key and secret from Binance
+---
 
-## Installation
+## 🏗️ Architecture Overview
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd <repository-directory>
-```
+- `src/agents/`: Investor-inspired agents (Buffett, Graham, Ackman, Burry, Wood, Munger, Lynch, Druckenmiller, Fisher, etc.)
+- `src/backtest/`: Backtesting engine and utilities
+- `src/tools/`: Exchange executors, API helpers
+- `src/data/`: Data providers (Binance, cache, models)
+- `src/config/`: Configuration management
+- `src/llm/`: LLM/AI integration (optional)
+- `discord_bot.py`: Discord bot interface (slash commands, DMs, agent registry)
+- `src/main.py`: CLI entry point for live trading
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+---
 
-3. Create a `.env` file in the project root with your Binance API credentials:
-```env
-BINANCE_API_KEY=your_api_key_here
-BINANCE_API_SECRET=your_api_secret_here
-```
+## 🧑‍💼 Available Agents
 
-## Configuration
+- **ben_graham**: Value investing, margin of safety
+- **warren_buffett**: Quality, long-term compounding
+- **bill_ackman**: Activist, catalyst-driven
+- **michael_burry**: Contrarian, bubble-spotting
+- **cathie_wood**: Growth, innovation
+- **charlie_munger**: Mental models, rationality
+- **peter_lynch**: Growth at reasonable price
+- **stanley_druckenmiller**: Macro, trend timing
+- **phil_fisher**: Qualitative, scuttlebutt
+- **binance_strategy**: Classic TA (RSI, MACD)
+- **mean_reversion**: Buys low, sells high
+- **trend_following**: Momentum/trend
+- **sentiment**: News/social sentiment
+- **valuation**: Fair value models
+- **fundamentals**: Financial health
+- **technicals**: Price action, indicators
 
-You can configure the trading bot by setting environment variables in the `.env` file:
+---
 
-```env
-# API Configuration
-BINANCE_API_KEY=your_api_key_here
-BINANCE_API_SECRET=your_api_secret_here
+## 🤖 Discord Bot Usage
 
-# Trading Parameters
-TRADING_PAIRS=BTCUSDT,ETHUSDT,BNBUSDT  # Comma-separated list of trading pairs
-BASE_CURRENCY=USDT
-QUOTE_CURRENCY=USDT
+- **Slash Commands** (work in DMs and servers):
+  - `/consult ticker:BTCUSDT timeframe:1h agents:ben_graham,bill_ackman,...`
+    - Get a unified, detailed analysis from multiple agents (DM only, with channel confirmation).
+  - `/agents` — List all available agents and their descriptions.
+  - `/backtest ticker:BTCUSDT agent_name:ben_graham candle:1h observations:100 leverage:1.0`
+    - Run a backtest simulation for any agent.
+  - `/techs ticker:BTCUSDT candle:1h` — Show technical analysis summary.
 
-# Order Parameters
-DEFAULT_ORDER_TYPE=LIMIT
-DEFAULT_TIME_IN_FORCE=GTC
+- **Response Format**: Each agent's block includes:
+  - Technical indicators
+  - Signal, action, confidence
+  - Reasoning
+  - Entry/exit/reversal/suggested duration
+  - Technical summary
+- **Multi-agent summary**: Final decision, risk assessment, and actionable recommendation (with emojis and Markdown for clarity).
+- **All analysis is sent via DM for privacy.**
 
-# Risk Management
-MAX_POSITION_SIZE=0.1  # Maximum position size as fraction of portfolio
-STOP_LOSS_PCT=0.02    # Stop loss percentage
-TAKE_PROFIT_PCT=0.04  # Take profit percentage
+---
 
-# Time Intervals
-CANDLE_INTERVAL=1h    # Candle interval for technical analysis
-UPDATE_INTERVAL=300   # Update interval in seconds (5 minutes)
+## 🧪 Backtesting
 
-# Technical Analysis Parameters
-RSI_PERIOD=14
-RSI_OVERBOUGHT=70
-RSI_OVERSOLD=30
-MACD_FAST=12
-MACD_SLOW=26
-MACD_SIGNAL=9
-```
+- Simulate any agent or ensemble on historical data.
+- Supports custom timeframes, leverage, and candle counts.
+- Results include PnL, win/loss, drawdown, and more.
+- Example:
+  ```bash
+  # From Discord:
+  /backtest ticker:BTCUSDT agent_name:ben_graham candle:1h observations:100
+  # Or from CLI:
+  python src/backtest/backtest_engine.py --ticker BTCUSDT --agent ben_graham --timeframe 1h --observations 100
+  ```
 
-## Usage
+---
 
-1. Start the trading bot:
-```bash
-python src/main.py
-```
+## ⚙️ Installation
 
-The bot will:
-- Connect to Binance using your API credentials
-- Monitor the configured trading pairs
-- Execute trades based on technical analysis signals
-- Manage positions with stop-loss and take-profit
-- Log all activities to `trading_bot.log`
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/anhbinh85/crypto-ai-hedge-fund.git
+   cd crypto-ai-hedge-fund
+   ```
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. **Set up environment variables:**
+   - Create a `.env` file in the root directory:
+     ```env
+     BINANCE_API_KEY=your_api_key_here
+     BINANCE_API_SECRET=your_api_secret_here
+     DISCORD_BOT_TOKEN=your_discord_token_here
+     # Optional: ALLOWED_GUILD_ID=your_guild_id
+     ```
 
-## Trading Strategy
+---
 
-The bot uses a combination of RSI and MACD indicators to generate trading signals:
+## 🔧 Configuration
 
-### Buy Signal
-- RSI is below the oversold threshold (default: 30)
-- MACD line crosses above the signal line
+- Edit `.env` for API keys and trading parameters (see sample in repo).
+- Advanced config in `src/config/binance_config.py`.
 
-### Sell Signal
-- RSI is above the overbought threshold (default: 70)
-- MACD line crosses below the signal line
+---
 
-### Risk Management
-- Stop-loss: Automatically sells when price drops by the configured percentage
-- Take-profit: Automatically sells when price increases by the configured percentage
-- Position sizing: Limits each position to a maximum percentage of the portfolio
+## 🏃 Usage
 
-## Logging
+- **Start the trading bot (CLI):**
+  ```bash
+  python src/main.py
+  ```
+- **Start the Discord bot:**
+  ```bash
+  python discord_bot.py
+  ```
+- **Interact via Discord DMs using slash commands.**
 
-The bot logs all activities to `trading_bot.log`, including:
-- Trading signals
-- Order executions
-- Position updates
-- Error messages
-- Account balance changes
+---
 
-## Disclaimer
+## 📦 Dependencies
 
-This trading bot is for educational purposes only. Use it at your own risk. Cryptocurrency trading involves significant risk of loss and is not suitable for all investors. Past performance is not indicative of future results.
+- Python 3.8+
+- numpy, pandas, talib, pandas_ta, python-binance, nextcord, python-dotenv, requests, ratelimit
 
-## License
+---
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+## 📜 License
+
+MIT License. See [LICENSE](LICENSE).
+
+---
+
+## ⚠️ Disclaimer
+
+This bot is for educational purposes only. Crypto trading is risky. Use at your own risk. No guarantees of profit or safety.
