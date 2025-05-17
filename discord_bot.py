@@ -27,9 +27,9 @@ import io
 from datetime import datetime
 import logging
 from src.agents.deepseekAIHelper import analyze_indicators_with_llm
+from src.mongodb_db.cex_btc import get_cex_btc_data
 
 # Load environment variables
-
 # print("DEEPSEEK_API_KEY:", os.getenv("DEEPSEEK_API_KEY"))
 # print("GEMINI_API_KEY:", os.getenv("GEMINI_API_KEY"))
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -503,7 +503,7 @@ async def tickers_binance(interaction: nextcord.Interaction):
         # Futures support
         futures_symbols = set()
         try:
-            from binance.um_futures import UMFutures
+            from binance.um_futures import UMFutures  # This is correct for binance-futures-connector
             futures_client = UMFutures(key=api_key, secret=api_secret)
             fut_info = futures_client.exchange_info()
             for s in fut_info['symbols']:
@@ -635,5 +635,74 @@ async def techs_analysis(
     except Exception as e:
         await interaction.user.send(f"❌ Error in /techs_analysis: {e}")
         await interaction.followup.send("❌ Error in /techs_analysis. Check your DM for details.", ephemeral=True)
+
+@bot.slash_command(
+    name="cex_btc",
+    description="Show BTC inflow/outflow to CEXs in USD for a given timeframe.",
+    guild_ids=[1214331987666542642]  # Replace with your actual guild ID
+)
+async def cex_btc(
+    interaction: nextcord.Interaction,
+    last: str = nextcord.SlashOption(description="Time window: 'latest', '1hour', ..., '24hours'")
+):
+    await interaction.response.defer(ephemeral=True)
+    data, price = get_cex_btc_data(last)
+    if data is None:
+        await interaction.followup.send(f"❌ {price}", ephemeral=True)
+        return
+
+    # Sort by total USD volume (inflow + outflow)
+    data_sorted = sorted(data, key=lambda x: (x[2] + x[4]), reverse=True)
+
+    # Only show top 10 CEXs
+    data_sorted = data_sorted[:10]
+
+    # Calculate total inflow/outflow for summary
+    total_inflow_btc = sum(x[1] for x in data_sorted)
+    total_inflow_usd = sum(x[2] for x in data_sorted)
+    total_outflow_btc = sum(x[3] for x in data_sorted)
+    total_outflow_usd = sum(x[4] for x in data_sorted)
+
+    # Prepare summary for top 3 CEXs
+    top3 = data_sorted[:3]
+    summary_lines = []
+    for cex, in_btc, in_usd, out_btc, out_usd in top3:
+        summary_lines.append(f"**{cex.title()}**: ⬆️ `${in_usd:,.0f}` ⬇️ `${out_usd:,.0f}`")
+    summary = "\n".join(summary_lines)
+
+    # Eye-catching header and totals
+    header = (
+        f"<:btc:1214331987666542642> **BTC Inflow/Outflow to CEXs ({last}):**\n"
+        f"**BTC/USD price:** `${price:,.2f}`\n"
+        f"\n:star: **Top CEXs by Total Flow:**\n{summary}\n"
+        f"\n💧 **Total Inflow:** `${total_inflow_btc:,.2f} BTC` (`${total_inflow_usd:,.0f}`)\n"
+        f"🔥 **Total Outflow:** `${total_outflow_btc:,.2f} BTC` (`${total_outflow_usd:,.0f}`)\n"
+        f"\n```\n"
+        f"{'CEX':<12} {'In (BTC)':>10} {'In ($)':>12} {'Out (BTC)':>10} {'Out ($)':>12}\n"
+        f"{'-'*58}\n"
+    )
+    # Build table rows (fit within 58 chars width)
+    table_rows = []
+    for cex, in_btc, in_usd, out_btc, out_usd in data_sorted:
+        table_rows.append(f"{cex[:12]:<12} {in_btc:10.2f} {in_usd:12,.0f} {out_btc:10.2f} {out_usd:12,.0f}\n")
+    # Split into chunks <= 2000 chars
+    chunks = []
+    current_chunk = header
+    for row in table_rows:
+        if len(current_chunk) + len(row) + 4 > 2000:  # +4 for closing code block and info
+            current_chunk += "```\n"
+            chunks.append(current_chunk)
+            current_chunk = "```\n" + row
+        else:
+            current_chunk += row
+    current_chunk += "```\n:information_source: **Top 10 CEXs by (Inflow $ + Outflow $)**\n"
+    chunks.append(current_chunk)
+    # Send each chunk as a DM
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            await interaction.user.send(chunk)
+        else:
+            await interaction.user.send(f"(cont.)\n" + chunk)
+    await interaction.followup.send("✅ Check your DMs for the CEX BTC inflow/outflow report!", ephemeral=True)
 
 bot.run(TOKEN)
